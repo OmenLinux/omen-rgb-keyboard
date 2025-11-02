@@ -33,11 +33,11 @@ make install
 
 # Create modprobe configuration (for module options)
 echo "Creating modprobe configuration..."
-cp hp-wmi.conf /etc/modprobe.d/
+cp omen_rgb_keyboard.conf /etc/modprobe.d/
 
 # Create systemd module loading configuration
 echo "Creating systemd module loading configuration..."
-echo "hp-wmi" > /etc/modules-load.d/hp-wmi.conf
+echo "omen_rgb_keyboard" > /etc/modules-load.d/omen_rgb_keyboard.conf
 
 # Create the state directory
 echo "Creating state directory..."
@@ -46,7 +46,7 @@ chmod 755 /var/lib/omen-rgb-keyboard
 
 # Load the module immediately
 echo "Loading module..."
-modprobe hp-wmi
+modprobe omen_rgb_keyboard
 
 echo "Installation complete!"
 echo "The driver will now load automatically on boot."

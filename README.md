@@ -49,10 +49,10 @@ The driver is configured to load automatically on boot. If you need to set this 
 
 ```bash
 # Create modprobe configuration (for module options)
-sudo cp hp-wmi.conf /etc/modprobe.d/
+sudo cp omen_rgb_keyboard.conf /etc/modprobe.d/
 
 # Create systemd module loading configuration
-echo "hp-wmi" | sudo tee /etc/modules-load.d/hp-wmi.conf
+echo "omen_rgb_keyboard" | sudo tee /etc/modules-load.d/omen_rgb_keyboard.conf
 
 # Create state directory
 sudo mkdir -p /var/lib/omen-rgb-keyboard
@@ -68,10 +68,10 @@ sudo ./install.sh
 ### Loading the Module
 ```bash
 # Load the module
-sudo modprobe hp_wmi
+sudo modprobe omen_rgb_keyboard
 
 # Check if it loaded successfully
-lsmod | grep hp_wmi
+lsmod | grep omen_rgb_keyboard
 ```
 
 ### Controlling RGB Lighting
@@ -234,13 +234,13 @@ echo "4" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_
 sudo dmesg | grep -i wmi
 
 # Check for errors
-sudo dmesg | grep -i hp_wmi
+sudo dmesg | grep -i omen_rgb_keyboard
 ```
 
 ### No RGB Zones Found
 ```bash
 # Verify the module loaded
-lsmod | grep hp_wmi
+lsmod | grep omen_rgb_keyboard
 
 # Check sysfs path
 ls -la /sys/devices/platform/omen-rgb-keyboard/rgb_zones/
