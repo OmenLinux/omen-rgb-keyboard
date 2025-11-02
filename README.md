@@ -4,6 +4,10 @@ Linux kernel driver for HP OMEN laptop RGB keyboard lighting. Controls 4-zone RG
 
 Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-omen-linux-module) by James Churchill (@pelrun).
 
+> [!TIP]  
+> Need help or want to chat? Join our **official Discord server** for support, questions, or to show off your RGB setups:  
+> **[➡️ Click here to join Discord](https://discord.gg/8UwyAJ7sBH)**  
+
 ## Features
 
 - 4-Zone RGB Control - Individual control over each keyboard zone
