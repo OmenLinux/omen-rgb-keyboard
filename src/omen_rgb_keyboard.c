@@ -27,9 +27,6 @@
 #include <linux/math.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
-#include <linux/namei.h>
-#include <linux/mount.h>
-#include <linux/syscalls.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -676,21 +673,10 @@ static void save_animation_state(void)
 		state.colors[i] = original_colors[i].colors;
 	}
 	
-	{
-		struct dentry *dentry;
-		struct path path;
-		int ret = kern_path("/var/lib/omen-rgb-keyboard", LOOKUP_FOLLOW, &path);
-		if (ret) {
-			dentry = kern_path_create(AT_FDCWD, "/var/lib/omen-rgb-keyboard", &path, LOOKUP_DIRECTORY);
-			if (!IS_ERR(dentry)) {
-				struct mnt_idmap *idmap = mnt_idmap(path.mnt);
-				vfs_mkdir(idmap, d_inode(path.dentry), dentry, 0755);
-				done_path_create(&path, dentry);
-			}
-		} else {
-			path_put(&path);
-		}
-	}
+	/* 
+	 * Note: Directory /var/lib/omen-rgb-keyboard is created by install.sh
+	 * We don't create it here to avoid kernel API compatibility issues
+	 */
 	
 	/* Open file for writing */
 	fp = filp_open(STATE_FILE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
