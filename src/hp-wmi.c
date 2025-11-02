@@ -1061,15 +1061,22 @@ static int __init hp_wmi_init(void)
 	int bios_capable = wmi_has_guid(HPWMI_BIOS_GUID);
 	int err;
 	if (!bios_capable)
+	{
+		pr_err("omen-rgb-keyboard: HP WMI BIOS GUID %s not found, driver not loaded\n", HPWMI_BIOS_GUID);
 		return -ENODEV;
+	}
 
 	hp_wmi_platform_dev = platform_device_register_simple("omen-rgb-keyboard", -1, NULL, 0);
 	if (IS_ERR(hp_wmi_platform_dev))
+	{
+		pr_err("omen-rgb-keyboard: failed to register platform device\n");
 		return PTR_ERR(hp_wmi_platform_dev);
+	}
 
 	err = platform_driver_probe(&hp_wmi_driver, hp_wmi_bios_setup);
 	if (err)
 	{
+		pr_err("omen-rgb-keyboard: platform_driver_probe failed with %d\n", err);
 		platform_device_unregister(hp_wmi_platform_dev);
 		return err;
 	}
