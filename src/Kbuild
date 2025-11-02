@@ -1,0 +1,1 @@
+obj-m := omen_rgb_keyboard.o

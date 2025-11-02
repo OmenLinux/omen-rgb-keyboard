@@ -4,4 +4,3 @@
 *.symvers
 *.order
 *.ko
-src/Kbuild
