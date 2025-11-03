@@ -177,20 +177,10 @@ ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
 	global_brightness = level;
 
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
-		/* Read current colors from hardware */
-		ret = fourzone_update_led(&zone_data[zone], HPWMI_READ);
-		if (ret)
-			return ret;
-
-		/* Store the original colors */
-		original_colors[zone].colors.red = zone_data[zone].colors.red;
-		original_colors[zone].colors.green = zone_data[zone].colors.green;
-		original_colors[zone].colors.blue = zone_data[zone].colors.blue;
-
-		/* Scale the colors by brightness */
-		zone_data[zone].colors.red = (zone_data[zone].colors.red * level) / 100;
-		zone_data[zone].colors.green = (zone_data[zone].colors.green * level) / 100;
-		zone_data[zone].colors.blue = (zone_data[zone].colors.blue * level) / 100;
+		/* Use the stored original colors and apply brightness */
+		zone_data[zone].colors.red = (original_colors[zone].colors.red * level) / 100;
+		zone_data[zone].colors.green = (original_colors[zone].colors.green * level) / 100;
+		zone_data[zone].colors.blue = (original_colors[zone].colors.blue * level) / 100;
 
 		ret = fourzone_update_led(&zone_data[zone], HPWMI_WRITE);
 		if (ret)
