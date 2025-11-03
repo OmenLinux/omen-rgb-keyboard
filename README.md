@@ -63,6 +63,29 @@ Alternatively, use the provided installation script:
 sudo ./install.sh
 ```
 
+### Non-Root Access (Optional)
+
+By default, controlling the RGB keyboard requires sudo privileges. To allow your user to control the RGB keyboard without sudo:
+
+```bash
+# Install udev rules and configure user permissions
+sudo ./install-udev-rules.sh
+```
+
+This script will:
+- Install udev rules that grant access to users in the 'input' group
+- Add your user to the 'input' group automatically
+- Reload udev rules to apply changes immediately
+
+**Important:** After running this script, you need to log out and log back in (or run `newgrp input`) for the group membership to take effect.
+
+After installation, you can control the keyboard without sudo:
+```bash
+# No sudo needed!
+echo "rainbow" | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_mode
+echo "5" | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_speed
+```
+
 ## Usage
 
 ### Loading the Module

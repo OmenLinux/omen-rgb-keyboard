@@ -1,0 +1,13 @@
+# HP OMEN RGB Keyboard udev rules
+# This allows users in the 'input' group to control RGB keyboard settings
+# without requiring sudo privileges
+
+# Allow read/write access to RGB zones (zone00, zone01, zone02, zone03, all)
+SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/*}=="*", GROUP="input", MODE="0664"
+
+# Allow read/write access to brightness control
+SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/brightness}=="*", GROUP="input", MODE="0664"
+
+# Allow read/write access to animation controls
+SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/animation_mode}=="*", GROUP="input", MODE="0664"
+SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/animation_speed}=="*", GROUP="input", MODE="0664"

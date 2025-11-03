@@ -48,6 +48,19 @@ chmod 755 /var/lib/omen-rgb-keyboard
 echo "Loading module..."
 modprobe omen_rgb_keyboard
 
+# Optionally install udev rules for non-root access
+echo ""
+read -p "Do you want to install udev rules for non-root access? (y/N) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if [ -f "install-udev-rules.sh" ]; then
+        bash install-udev-rules.sh
+    else
+        echo "Warning: install-udev-rules.sh not found, skipping udev rules installation"
+    fi
+fi
+
+echo ""
 echo "Installation complete!"
 echo "The driver will now load automatically on boot."
 echo ""
@@ -55,4 +68,5 @@ echo "You can control the RGB keyboard using:"
 echo "  echo 'rainbow' | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_mode"
 echo "  echo '5' | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_speed"
 echo ""
+echo "If you installed udev rules, you can omit 'sudo' after logging out and back in."
 echo "See README.md for more examples and controls."
