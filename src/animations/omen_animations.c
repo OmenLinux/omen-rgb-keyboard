@@ -21,6 +21,7 @@
 #include "omen_animations.h"
 #include "omen_zones.h"
 #include "omen_state.h"
+#include "../utils/math/sin_lut.h"
 
 /* Animation state */
 enum animation_mode current_animation = ANIMATION_STATIC;
@@ -31,30 +32,14 @@ static struct timer_list animation_timer;
 static struct work_struct animation_work;
 static unsigned long animation_start_time;
 
-/* Simple sine approximation for animations */
-static inline int simple_sin(int angle_degrees)
-{
-	angle_degrees = angle_degrees % 360;
-	if (angle_degrees < 0) angle_degrees += 360;
-	if (angle_degrees < 90) {
-		return (angle_degrees * 100) / 90;
-	} else if (angle_degrees < 180) {
-		return ((180 - angle_degrees) * 100) / 90;
-	} else if (angle_degrees < 270) {
-		return -((angle_degrees - 180) * 100) / 90;
-	} else {
-		return -((360 - angle_degrees) * 100) / 90;
-	}
-}
-
 void hsv_to_rgb(int h, int s, int v, struct color_platform *rgb)
 {
 	int c = (v * s) / 100;
 	int x = c * (60 - abs((h % 120) - 60)) / 60;
 	int m = v - c;
-	
+
 	int r, g, b;
-	
+
 	if (h < 60) {
 		r = c; g = x; b = 0;
 	} else if (h < 120) {
@@ -68,7 +53,7 @@ void hsv_to_rgb(int h, int s, int v, struct color_platform *rgb)
 	} else {
 		r = c; g = 0; b = x;
 	}
-	
+
 	rgb->red = (r + m) * 255 / 100;
 	rgb->green = (g + m) * 255 / 100;
 	rgb->blue = (b + m) * 255 / 100;
@@ -80,10 +65,10 @@ static void animation_breathing(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(2000 / animation_speed); /* 2 second cycle */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	int angle = (360 * cycle_pos) / cycle_time;
-	int intensity = 50 + (50 * simple_sin(angle)) / 100;
-	
+	int intensity = 50 + (50 * lut_sin(angle)) / 100;
+
 	struct color_platform colors[ZONE_COUNT];
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		colors[zone] = original_colors[zone].colors;
@@ -91,7 +76,7 @@ static void animation_breathing(void)
 		colors[zone].green = (colors[zone].green * intensity) / 100;
 		colors[zone].blue = (colors[zone].blue * intensity) / 100;
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -100,13 +85,13 @@ static void animation_rainbow(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(3000 / animation_speed); /* 3 second cycle */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	struct color_platform colors[ZONE_COUNT];
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		int hue = (360 * cycle_pos / cycle_time + zone * 90) % 360;
 		hsv_to_rgb(hue, 100, 100, &colors[zone]);
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -115,19 +100,19 @@ static void animation_wave(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(2000 / animation_speed); /* 2 second cycle */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	struct color_platform colors[ZONE_COUNT];
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		int wave_pos = (cycle_pos * 4 / cycle_time + zone) % 4;
 		int angle = (360 * wave_pos) / 4;
-		int intensity = 30 + (70 * (100 + simple_sin(angle)) / 200);
-		
+		int intensity = 30 + (70 * (100 + lut_sin(angle)) / 200);
+
 		colors[zone] = original_colors[zone].colors;
 		colors[zone].red = (colors[zone].red * intensity) / 100;
 		colors[zone].green = (colors[zone].green * intensity) / 100;
 		colors[zone].blue = (colors[zone].blue * intensity) / 100;
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -136,10 +121,10 @@ static void animation_pulse(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(1500 / animation_speed); /* 1.5 second cycle */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	int angle = (360 * cycle_pos) / cycle_time;
-	int intensity = 20 + (80 * (100 + simple_sin(angle)) / 200);
-	
+	int intensity = 20 + (80 * (100 + lut_sin(angle)) / 200);
+
 	struct color_platform colors[ZONE_COUNT];
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		colors[zone] = original_colors[zone].colors;
@@ -147,7 +132,7 @@ static void animation_pulse(void)
 		colors[zone].green = (colors[zone].green * intensity) / 100;
 		colors[zone].blue = (colors[zone].blue * intensity) / 100;
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -156,12 +141,12 @@ static void animation_chase(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(1200 / animation_speed); /* 1.2 second cycle */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	struct color_platform colors[ZONE_COUNT];
 	int active_zone = (cycle_pos * ZONE_COUNT) / cycle_time;
-	
+
 	struct color_platform base_color = original_colors[0].colors;
-	
+
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		if (zone == active_zone) {
 			colors[zone] = base_color;
@@ -172,7 +157,7 @@ static void animation_chase(void)
 			colors[zone].blue = colors[zone].blue / 6;
 		}
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -180,14 +165,14 @@ static void animation_sparkle(void)
 {
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(3000 / animation_speed);
-	
+
 	struct color_platform colors[ZONE_COUNT];
 	struct color_platform base_color = original_colors[0].colors;
-	
+
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		int sparkle_offset = (elapsed + zone * 800) % cycle_time;
 		int sparkle_duration = cycle_time / 8; /* Short sparkle duration */
-		
+
 		if (sparkle_offset < sparkle_duration) {
 			colors[zone].red = 255;
 			colors[zone].green = 255;
@@ -199,7 +184,7 @@ static void animation_sparkle(void)
 			colors[zone].blue = colors[zone].blue / 8;
 		}
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -208,19 +193,19 @@ static void animation_candle(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(100 / animation_speed); /* Fast flicker */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	struct color_platform colors[ZONE_COUNT];
-	
+
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		/* Candle flicker - warm colors with random intensity */
 		int flicker = (cycle_pos + zone * 500) % cycle_time;
 		int intensity = 60 + (40 * flicker) / cycle_time;
-		
+
 		colors[zone].red = (255 * intensity) / 100;
 		colors[zone].green = (150 * intensity) / 100;
 		colors[zone].blue = (50 * intensity) / 100;
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -229,19 +214,19 @@ static void animation_aurora(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(4000 / animation_speed); /* Slow aurora */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	struct color_platform colors[ZONE_COUNT];
-	
+
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		int wave_pos = (cycle_pos * 2 + zone * 1000) % cycle_time;
-		int intensity = 30 + (70 * (100 + simple_sin((360 * wave_pos) / cycle_time)) / 200);
-		
+		int intensity = 30 + (70 * (100 + lut_sin((360 * wave_pos) / cycle_time)) / 200);
+
 		/* Aurora colors - green and blue */
 		colors[zone].red = (20 * intensity) / 100;
 		colors[zone].green = (200 * intensity) / 100;
 		colors[zone].blue = (180 * intensity) / 100;
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -250,9 +235,9 @@ static void animation_disco(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long cycle_time = msecs_to_jiffies(300 / animation_speed); /* Fast strobe */
 	unsigned long cycle_pos = elapsed % cycle_time;
-	
+
 	struct color_platform colors[ZONE_COUNT];
-	
+
 	/* Disco strobe - bright colors that flash */
 	if (cycle_pos < cycle_time / 2) {
 		/* Flash on */
@@ -273,7 +258,7 @@ static void animation_disco(void)
 			colors[zone].blue = 0;
 		}
 	}
-	
+
 	update_all_zones_with_colors(colors);
 }
 
@@ -282,7 +267,7 @@ static void animation_work_func(struct work_struct *work)
 {
 	if (!animation_active || current_animation == ANIMATION_STATIC)
 		return;
-	
+
 	switch (current_animation) {
 	case ANIMATION_BREATHING:
 		animation_breathing();
@@ -331,10 +316,10 @@ void animation_start(void)
 		animation_active = false;
 		return;
 	}
-	
+
 	animation_start_time = jiffies;
 	animation_active = true;
-	
+
 	/* Start the timer */
 	timer_setup(&animation_timer, animation_timer_callback, 0);
 	mod_timer(&animation_timer, jiffies + msecs_to_jiffies(ANIMATION_TIMER_INTERVAL_MS));
@@ -344,7 +329,7 @@ void animation_stop(void)
 {
 	animation_active = false;
 	timer_delete(&animation_timer);
-	
+
 	/* Restore original colors */
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
 		zone_data[zone].colors = original_colors[zone].colors;
@@ -368,13 +353,13 @@ static ssize_t animation_mode_show(struct device *dev, struct device_attribute *
 				   char *buf)
 {
 	const char *mode_names[] = {
-		"static", "breathing", "rainbow", "wave", "pulse", 
+		"static", "breathing", "rainbow", "wave", "pulse",
 		"chase", "sparkle", "candle", "aurora", "disco"
 	};
-	
+
 	if (current_animation >= ANIMATION_COUNT)
 		return sprintf(buf, "unknown\n");
-	
+
 	return sprintf(buf, "%s\n", mode_names[current_animation]);
 }
 
@@ -382,7 +367,7 @@ static ssize_t animation_mode_set(struct device *dev, struct device_attribute *a
 				  const char *buf, size_t count)
 {
 	enum animation_mode new_mode = ANIMATION_STATIC;
-	
+
 	if (strncmp(buf, "static", 6) == 0) {
 		new_mode = ANIMATION_STATIC;
 	} else if (strncmp(buf, "breathing", 9) == 0) {
@@ -406,18 +391,18 @@ static ssize_t animation_mode_set(struct device *dev, struct device_attribute *a
 	} else {
 		return -EINVAL;
 	}
-	
+
 	animation_stop();
-	
+
 	current_animation = new_mode;
-	
+
 	if (new_mode != ANIMATION_STATIC) {
 		animation_start();
 	}
-	
+
 	/* Save state */
 	save_animation_state();
-	
+
 	return count;
 }
 
@@ -432,24 +417,24 @@ static ssize_t animation_speed_set(struct device *dev, struct device_attribute *
 {
 	unsigned long speed;
 	int ret;
-	
+
 	ret = kstrtoul(buf, 10, &speed);
 	if (ret)
 		return ret;
-	
+
 	if (speed < ANIMATION_SPEED_MIN || speed > ANIMATION_SPEED_MAX)
 		return -EINVAL;
-	
+
 	animation_speed = speed;
-	
+
 	if (animation_active && current_animation != ANIMATION_STATIC) {
 		animation_stop();
 		animation_start();
 	}
-	
+
 	/* Save state */
 	save_animation_state();
-	
+
 	return count;
 }
 
@@ -469,8 +454,7 @@ void animation_init(void)
 void animation_cleanup(void)
 {
 	animation_stop();
-	
+
 	/* Cancel any pending work */
 	cancel_work_sync(&animation_work);
 }
-
