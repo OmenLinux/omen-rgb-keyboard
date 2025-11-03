@@ -13,6 +13,7 @@
 #include <linux/types.h>
 
 #define HPWMI_BIOS_GUID "5FB7F034-2C63-45e9-BE91-3D44E2C707E4"
+#define HPWMI_EVENT_GUID "95F24279-4D7B-4334-9387-ACCDC67EF61C"
 
 enum hp_wmi_commandtype {
 	HPWMI_GET_PLATFORM_INFO = 1,
@@ -62,6 +63,17 @@ enum hp_return_value {
  */
 int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 			 void *buffer, int insize, int outsize);
+
+/**
+ * hp_wmi_input_setup - Initialize input device for key events
+ * Returns: 0 on success, error code otherwise
+ */
+int hp_wmi_input_setup(void);
+
+/**
+ * hp_wmi_input_cleanup - Cleanup input device
+ */
+void hp_wmi_input_cleanup(void);
 
 #endif /* OMEN_WMI_H */
 

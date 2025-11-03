@@ -43,6 +43,12 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		return ret;
 	}
 	
+	/* Setup input device for Omen key handling */
+	ret = hp_wmi_input_setup();
+	if (ret) {
+		pr_warn("Failed to setup input device: %d\n", ret);
+	}
+	
 	/* Start animation if not static */
 	if (animation_get_mode() != ANIMATION_STATIC) {
 		animation_start();
@@ -88,6 +94,9 @@ module_init(hp_wmi_init);
 
 static void __exit hp_wmi_exit(void)
 {
+	/* Cleanup input device */
+	hp_wmi_input_cleanup();
+	
 	/* Stop animations and cleanup */
 	animation_cleanup();
 	

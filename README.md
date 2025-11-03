@@ -14,6 +14,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - All-Zone Control - Set all zones to the same color at once
 - Brightness Control - Adjust brightness from 0-100%
 - **10 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
+- **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
 
@@ -248,6 +249,43 @@ echo "6" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_
 echo "candle" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_mode
 echo "4" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_speed
 ```
+
+## Omen Key Mapping
+
+The driver intercepts the Omen key press and maps it to `KEY_MSDOS`, allowing you to bind custom shortcuts to it.
+
+### Setting Up Shortcuts
+
+**GNOME:**
+1. Open Settings → Keyboard → Keyboard Shortcuts
+2. Click "+" to add a custom shortcut
+3. Press the Omen key when prompted
+4. Assign your desired action
+
+**KDE Plasma:**
+1. System Settings → Shortcuts → Custom Shortcuts
+2. Edit → New → Global Shortcut → Command/URL
+3. Set the trigger to the Omen key
+4. Assign your command
+
+**i3/Sway:**
+Add to your config file:
+```
+bindsym XF86DOS exec your-command-here
+```
+
+### Customizing the Key Mapping
+
+If you want to map the Omen key to a different key, edit `src/wmi/omen_wmi.c`:
+
+```c
+static const struct key_entry hp_wmi_keymap[] = {
+    { KE_KEY, OMEN_KEY_SCANCODE, { KEY_MSDOS } },  // Change KEY_MSDOS to your preferred key
+    { KE_END, 0 }
+};
+```
+
+After changing, rebuild with `sudo make install`.
 
 ## Troubleshooting
 
