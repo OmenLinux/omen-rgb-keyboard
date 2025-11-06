@@ -29,6 +29,8 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 ```bash
 # Install kernel headers and build tools
 sudo pacman -S linux-headers base-devel  # Arch Linux
+# for Fedora
+sudo dnf install kernel-devel kernel-headers @development-tools dkms
 # or
 sudo apt install linux-headers-$(uname -r) build-essential  # Ubuntu/Debian
 ```
