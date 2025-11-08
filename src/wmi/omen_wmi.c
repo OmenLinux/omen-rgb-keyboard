@@ -131,6 +131,7 @@ static void hp_wmi_notify(union acpi_object *obj, void *context)
 int hp_wmi_input_setup(void)
 {
 	int err;
+	acpi_status status;
 
 	hp_wmi_input_dev = input_allocate_device();
 	if (!hp_wmi_input_dev)
@@ -152,9 +153,10 @@ int hp_wmi_input_setup(void)
 		goto err_free_dev;
 
 	/* Register WMI event notifier */
-	err = wmi_install_notify_handler(HPWMI_EVENT_GUID, hp_wmi_notify, NULL);
-	if (ACPI_FAILURE(err)) {
-		pr_err("Failed to register WMI event handler\n");
+	status = wmi_install_notify_handler(HPWMI_EVENT_GUID, hp_wmi_notify, NULL);
+	if (ACPI_FAILURE(status)) {
+		pr_err("Failed to register WMI event handler: %s\n",
+		       acpi_format_exception(status));
 		goto err_unregister_dev;
 	}
 
