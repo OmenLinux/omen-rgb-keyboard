@@ -1,6 +1,6 @@
 title: HP OMEN RGB Keyboard Driver
 description: Linux kernel driver for HP OMEN laptop RGB keyboard lighting with 4-zone control and animations
-theme: jekyll-theme-cayman
+theme: jekyll-theme-primer
 show_downloads: true
 github:
   repository_url: https://github.com/alessandromrc/omen-rgb-keyboard
