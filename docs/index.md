@@ -40,6 +40,13 @@ sudo dnf install kernel-devel kernel-headers @development-tools dkms
 sudo apt install linux-headers-$(uname -r) build-essential  # Ubuntu/Debian
 ```
 
+> [!IMPORTANT]
+> We've noticed issues when using this driver at the same time with *`hp_wmi`* loaded. Since we implement the same things but in an improved way, there's no reason to keep both fighting each other for WMI events (which **will** cause issues)
+> ```bash
+> sudo modprobe -r hp_wmi
+> echo "blacklist hp_wmi" | sudo tee /etc/modprobe.d/blacklist-hp.conf
+> ```
+
 ### Build and Install
 ```bash
 # Clone the repository
