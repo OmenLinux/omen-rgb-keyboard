@@ -155,9 +155,24 @@ int hp_wmi_input_setup(void)
 	/* Register WMI event notifier */
 	status = wmi_install_notify_handler(HPWMI_EVENT_GUID, hp_wmi_notify, NULL);
 	if (ACPI_FAILURE(status)) {
-		pr_err("Failed to register WMI event handler: %s\n",
-		       acpi_format_exception(status));
-		goto err_unregister_dev;
+		if (status == AE_ALREADY_ACQUIRED) {
+			/* Handler already registered (likely hp_wmi), forcefully take over */
+			pr_info("WMI event handler already registered, taking over from hp_wmi\n");
+			wmi_remove_notify_handler(HPWMI_EVENT_GUID);
+			
+			/* Try again */
+			status = wmi_install_notify_handler(HPWMI_EVENT_GUID, hp_wmi_notify, NULL);
+			if (ACPI_FAILURE(status)) {
+				pr_err("Failed to register WMI event handler after takeover: %s\n",
+				       acpi_format_exception(status));
+				goto err_unregister_dev;
+			}
+			pr_info("Successfully took over WMI event handler\n");
+		} else {
+			pr_err("Failed to register WMI event handler: %s\n",
+			       acpi_format_exception(status));
+			goto err_unregister_dev;
+		}
 	}
 
 	pr_info("HP WMI input device registered (Omen key -> MSDOS)\n");

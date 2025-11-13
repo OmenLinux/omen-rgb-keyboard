@@ -27,11 +27,12 @@ if ! command -v dkms &> /dev/null; then
     fi
 fi
 
-# Unload hp_wmi and yeet it from boot
-echo "Unloading hp_wmi"
-sudo modprobe -r hp_wmi
-echo "Blacklisting hp_wmi from boot"
-echo "blacklist hp_wmi" | tee /etc/modprobe.d/blacklist-hp.conf
+# Unload hp_wmi and blacklist it from boot
+echo "Checking for hp_wmi module..."
+if lsmod | grep -q "^hp_wmi"; then
+    echo "Unloading hp_wmi module..."
+    modprobe -r hp_wmi 2>/dev/null || true
+fi
 
 # Install the module
 echo "Installing module with DKMS..."

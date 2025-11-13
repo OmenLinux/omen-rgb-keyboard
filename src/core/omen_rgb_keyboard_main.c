@@ -12,12 +12,14 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/wmi.h>
+#include <generated/utsrelease.h>
 
 #include "omen_rgb_keyboard.h"
 #include "omen_wmi.h"
 #include "omen_zones.h"
 #include "omen_animations.h"
 #include "omen_state.h"
+#include "omen_hda_led.h"
 
 MODULE_AUTHOR("alessandromrc");
 MODULE_DESCRIPTION(DRIVER_DESC);
@@ -49,6 +51,13 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		pr_warn("Failed to setup input device: %d\n", ret);
 	}
 	
+	/* Initialize HDA LED control for mute button */
+	ret = omen_hda_led_init();
+	if (ret) {
+		pr_warn("Failed to initialize HDA LED control: %d\n", ret);
+		/* Non-fatal, continue anyway */
+	}
+	
 	/* Start animation if not static */
 	if (animation_get_mode() != ANIMATION_STATIC) {
 		animation_start();
@@ -69,6 +78,10 @@ static int __init hp_wmi_init(void)
 	int bios_capable = wmi_has_guid(HPWMI_BIOS_GUID);
 	int err;
 	
+	/* Print driver info */
+	pr_info("== HP OMEN RGB Keyboard Driver v%s (kernel %s) by alessandromrc ==\n", 
+		DRIVER_VERSION, UTS_RELEASE);
+	
 	if (!bios_capable) {
 		pr_err("HP WMI BIOS GUID %s not found, driver not loaded\n", HPWMI_BIOS_GUID);
 		return -ENODEV;
@@ -87,13 +100,16 @@ static int __init hp_wmi_init(void)
 		return err;
 	}
 	
-	pr_info("Driver loaded successfully\n");
+	pr_info("Driver loaded successfully (RGB zones, animations, mute LED sync enabled)\n");
 	return 0;
 }
 module_init(hp_wmi_init);
 
 static void __exit hp_wmi_exit(void)
 {
+	/* Cleanup HDA LED control */
+	omen_hda_led_cleanup();
+	
 	/* Cleanup input device */
 	hp_wmi_input_cleanup();
 	

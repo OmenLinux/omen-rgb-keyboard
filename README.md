@@ -15,6 +15,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - Brightness Control - Adjust brightness from 0-100%
 - **10 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
+- **Mute Button LED Control** - Control the mute button LED via HDA verb commands
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
 
@@ -144,6 +145,17 @@ echo "100" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightne
 # Turn off lighting (0% brightness)
 echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightness
 ```
+
+#### Mute Button LED Control
+```bash
+# Turn mute button LED on
+echo "1" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
+
+# Turn mute button LED off
+echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
+```
+
+See [HDA_LED_CONTROL.md](HDA_LED_CONTROL.md) for detailed information about mute LED control.
 
 #### Reading Current Values
 ```bash

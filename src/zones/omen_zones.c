@@ -19,6 +19,7 @@
 #include "omen_zones.h"
 #include "omen_animations.h"
 #include "omen_state.h"
+#include "omen_hda_led.h"
 
 struct device_attribute *zone_dev_attrs;
 struct attribute **zone_attrs;
@@ -238,6 +239,33 @@ ssize_t all_set(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
+static ssize_t mute_led_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	/* We don't have a way to read the LED state, so just return help text */
+	return sprintf(buf, "Write '1' to turn on, '0' to turn off\n");
+}
+
+static ssize_t mute_led_set(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	unsigned long value;
+	int ret;
+
+	ret = kstrtoul(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	/* Set mute button LED state based on value */
+	ret = omen_hda_led_set(value ? true : false);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
+static DEVICE_ATTR(mute_led, 0644, mute_led_show, mute_led_set);
+
 int fourzone_setup(struct platform_device *dev)
 {
 	u8 zone;
@@ -249,7 +277,7 @@ int fourzone_setup(struct platform_device *dev)
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
-	zone_attrs = kcalloc(ZONE_COUNT + 5, sizeof(struct attribute *),
+	zone_attrs = kcalloc(ZONE_COUNT + 6, sizeof(struct attribute *),
 			     GFP_KERNEL);
 	if (!zone_attrs)
 		return -ENOMEM;
@@ -297,7 +325,8 @@ int fourzone_setup(struct platform_device *dev)
 	zone_attrs[ZONE_COUNT + 1] = &animation_brightness_attr.attr;
 	zone_attrs[ZONE_COUNT + 2] = &animation_mode_attr.attr;
 	zone_attrs[ZONE_COUNT + 3] = &animation_speed_attr.attr;
-	zone_attrs[ZONE_COUNT + 4] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 4] = &dev_attr_mute_led.attr;
+	zone_attrs[ZONE_COUNT + 5] = NULL; /* NULL terminate the array */
 
 	zone_attribute_group.attrs = zone_attrs;
 	

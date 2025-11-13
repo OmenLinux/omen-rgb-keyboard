@@ -9,4 +9,5 @@ omen_rgb_keyboard-y := \
 	zones/omen_zones.o \
 	animations/omen_animations.o \
 	state/omen_state.o \
+	hda/omen_hda_led.o \
 	core/omen_rgb_keyboard_main.o
