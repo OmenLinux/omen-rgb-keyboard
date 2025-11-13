@@ -31,14 +31,20 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 ## Installation
 
 ### Prerequisites
+
 ```bash
-# Install kernel headers and build tools
-sudo pacman -S linux-headers base-devel  # Arch Linux
-# for Fedora
-sudo dnf install kernel-devel kernel-headers @development-tools dkms
-# or
-sudo apt install linux-headers-$(uname -r) build-essential  # Ubuntu/Debian
+# Arch Linux
+sudo pacman -S linux-headers base-devel alsa-lib
+
+# Fedora
+sudo dnf install kernel-devel kernel-headers @development-tools dkms alsa-lib-devel
+
+# Ubuntu/Debian
+sudo apt install linux-headers-$(uname -r) build-essential libasound2-dev
 ```
+
+**Note**: The ALSA libraries are required for the mute button LED control feature. The driver will still compile without them, but LED sync functionality will be disabled.
+
 
 > [!IMPORTANT]
 > We've noticed issues when using this driver at the same time with *`hp_wmi`* loaded. Since we implement the same things but in an improved way, there's no reason to keep both fighting each other for WMI events (which **will** cause issues)
