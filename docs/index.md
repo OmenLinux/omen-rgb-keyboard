@@ -45,6 +45,7 @@ sudo apt install linux-headers-$(uname -r) build-essential  # Ubuntu/Debian
 > ```bash
 > sudo modprobe -r hp_wmi
 > echo "blacklist hp_wmi" | sudo tee /etc/modprobe.d/blacklist-hp.conf
+> #regenerate your initramfs (dependent on your distro)
 > ```
 
 ### Build and Install
