@@ -15,7 +15,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - Brightness Control - Adjust brightness from 0-100%
 - **10 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
-- **Mute Button LED Control** - Control the mute button LED via HDA verb commands
+- **Mute Button LED Control** - Automatic LED sync with system mute state via HDA codec
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
 
@@ -27,14 +27,19 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 ## Installation
 
 ### Prerequisites
+
 ```bash
-# Install kernel headers and build tools
-sudo pacman -S linux-headers base-devel  # Arch Linux
-# for Fedora
-sudo dnf install kernel-devel kernel-headers @development-tools dkms
-# or
-sudo apt install linux-headers-$(uname -r) build-essential  # Ubuntu/Debian
+# Arch Linux
+sudo pacman -S linux-headers base-devel alsa-lib
+
+# Fedora
+sudo dnf install kernel-devel kernel-headers @development-tools dkms alsa-lib-devel
+
+# Ubuntu/Debian
+sudo apt install linux-headers-$(uname -r) build-essential libasound2-dev
 ```
+
+**Note**: The ALSA libraries are required for the mute button LED control feature. The driver will still compile without them, but LED sync functionality will be disabled.
 
 > [!IMPORTANT]
 > We've noticed issues when using this driver at the same time with *`hp_wmi`* loaded. Since we implement the same things but in an improved way, there's no reason to keep both fighting each other for WMI events (which **will** cause issues)
@@ -147,15 +152,19 @@ echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightness
 ```
 
 #### Mute Button LED Control
+
+The mute button LED is **automatically synchronized** with your system's mute state (polls every 200ms). When you mute audio, the LED turns on; when unmuted, it turns off.
+
+You can also manually control it:
 ```bash
-# Turn mute button LED on
+# Manually turn mute button LED on (disables auto-sync)
 echo "1" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
 
-# Turn mute button LED off
+# Manually turn mute button LED off
 echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
 ```
 
-See [HDA_LED_CONTROL.md](HDA_LED_CONTROL.md) for detailed information about mute LED control.
+**Note**: Manual control disables automatic synchronization until the driver is reloaded.
 
 #### Reading Current Values
 ```bash
