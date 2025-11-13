@@ -18,7 +18,7 @@
 #include <linux/platform_device.h>
 
 /* Module information */
-#define DRIVER_VERSION "1.2"
+#define DRIVER_VERSION "1.3"
 #define DRIVER_NAME "omen-rgb-keyboard"
 #define DRIVER_DESC "HP OMEN FourZone RGB Keyboard Lighting Driver"
 
