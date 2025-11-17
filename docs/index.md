@@ -3,8 +3,6 @@ layout: default
 title: Home
 ---
 
-# HP OMEN RGB Keyboard Driver
-
 Linux kernel driver for HP OMEN laptop RGB keyboard lighting. Controls 4-zone RGB lighting with brightness control.
 
 Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-omen-linux-module) by James Churchill (@pelrun).
