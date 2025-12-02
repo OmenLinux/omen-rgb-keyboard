@@ -61,14 +61,17 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 {
 	struct snd_card *card;
 	struct list_head *p;
+	struct hda_codec *found_codec = NULL;
 	
 	/* Get the sound card */
 	card = snd_card_ref(card_num);
 	if (!card) {
-		pr_err("Sound card %d not found\n", card_num);
+		pr_debug("Sound card %d not found or not ready yet\n", card_num);
 		return NULL;
 	}
 	
+	pr_debug("Searching for codec %d on card %d (%s)\n", 
+		 codec_addr, card_num, card->shortname);
 	
 	/* Iterate through all devices registered with this sound card */
 	list_for_each(p, &card->devices) {
@@ -81,16 +84,53 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 			if (hwdep && hwdep->private_data) {
 				struct hda_codec *codec = hwdep->private_data;
 				
+				pr_debug("Found hwdep device with codec at addr %d (vendor:0x%x)\n",
+					 codec->core.addr, codec->core.vendor_id);
+				
 				/* Check if this is the codec we're looking for */
 				if (codec && codec->core.addr == codec_addr) {
-					return codec;
+					found_codec = codec;
+					pr_info("Found HDA codec on card %d, addr %d: %s\n",
+						card_num, codec_addr, codec->core.chip_name);
+					/* Don't unref card - we're keeping the reference */
+					return found_codec;
 				}
 			}
 		}
 	}
 	
-	pr_warn("Codec %d not found on card %d\n", codec_addr, card_num);
+	pr_debug("Codec %d not found on card %d\n", codec_addr, card_num);
 	snd_card_unref(card);
+	return NULL;
+}
+
+/**
+ * find_hda_codec_any_card - Find HDA codec by scanning all sound cards
+ *
+ * Scans all available sound cards looking for an HDA codec.
+ * Useful when the default card number doesn't work or for SOF systems.
+ *
+ * Returns: pointer to hda_codec on success, NULL on failure
+ */
+static struct hda_codec *find_hda_codec_any_card(void)
+{
+	struct hda_codec *codec;
+	int card_num;
+	
+	/* Try cards 0-7 */
+	for (card_num = 0; card_num < 8; card_num++) {
+		/* Try codec addresses 0-3 (most systems use 0) */
+		int codec_addr;
+		for (codec_addr = 0; codec_addr < 4; codec_addr++) {
+			codec = find_hda_codec_by_card_number(card_num, codec_addr);
+			if (codec) {
+				pr_info("HDA codec found on card %d, codec addr %d\n",
+					card_num, codec_addr);
+				return codec;
+			}
+		}
+	}
+	
 	return NULL;
 }
 
@@ -287,21 +327,42 @@ static void omen_register_volume_monitor(void)
 int omen_hda_led_init(void)
 {
 	struct snd_card *card;
+	int card_num;
+	
+	pr_debug("Initializing HDA LED control\n");
 	
 	/* Try to find the codec on card 1, device 0 (matches hwC1D0) */
 	omen_codec = find_hda_codec_by_card_number(DEFAULT_HDA_CARD, DEFAULT_HDA_CODEC);
 	
 	if (!omen_codec) {
-		pr_warn("Could not find HDA codec for LED control\n");
-		return -ENODEV;
+		pr_info("Codec not found on default card %d, scanning all cards...\n", 
+			DEFAULT_HDA_CARD);
+		
+		/* Try scanning all available cards */
+		omen_codec = find_hda_codec_any_card();
+		
+		if (!omen_codec) {
+			pr_warn("Could not find HDA codec for LED control on any card\n");
+			pr_warn("Mute LED functionality will not be available\n");
+			return -ENODEV;
+		}
 	}
 
-	/* Keep reference to the card for volume monitoring */
-	card = snd_card_ref(DEFAULT_HDA_CARD);
-	if (card) {
-		omen_card = card;
-		/* Register volume monitoring */
-		omen_register_volume_monitor();
+	/* Get the card number from the codec */
+	if (omen_codec && omen_codec->card) {
+		card_num = omen_codec->card->number;
+		pr_info("Using sound card %d for LED control\n", card_num);
+		
+		/* Keep reference to the card for volume monitoring */
+		card = snd_card_ref(card_num);
+		if (card) {
+			omen_card = card;
+			/* Register volume monitoring */
+			omen_register_volume_monitor();
+		}
+	} else {
+		pr_warn("Codec found but card reference invalid\n");
+		return -ENODEV;
 	}
 
 	pr_info("HDA LED control initialized successfully\n");
