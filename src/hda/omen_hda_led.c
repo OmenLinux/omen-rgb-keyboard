@@ -43,6 +43,10 @@ static struct snd_kcontrol *mute_control = NULL;
 static struct timer_list mute_check_timer;
 static struct work_struct mute_check_work;
 static bool last_mute_state = false;
+static struct delayed_work codec_retry_work;
+static int codec_retry_count = 0;
+#define MAX_CODEC_RETRIES 10
+#define CODEC_RETRY_DELAY_MS 100000 /* 100 seconds */
 
 /* Check mute state every 200ms */
 #define MUTE_CHECK_INTERVAL_MS 200
@@ -265,6 +269,61 @@ static void mute_check_timer_callback(struct timer_list *t)
 }
 
 /**
+ * codec_retry_work_handler - Delayed work handler for retrying codec discovery
+ * @work: Delayed work structure
+ *
+ * Retries finding the HDA codec asynchronously without blocking driver init
+ */
+static void codec_retry_work_handler(struct work_struct *work)
+{
+	struct snd_card *card;
+	int card_num;
+
+	codec_retry_count++;
+
+	pr_debug("Retry attempt %d/%d: searching for HDA codec\n",
+		 codec_retry_count, MAX_CODEC_RETRIES);
+
+	/* Try to find the codec */
+	omen_codec = find_hda_codec_any_card();
+
+	if (omen_codec) {
+		pr_info("HDA codec found on retry attempt %d\n", codec_retry_count);
+
+		/* Get the card number from the codec */
+		if (omen_codec->card) {
+			card_num = omen_codec->card->number;
+			pr_info("Using sound card %d for LED control\n", card_num);
+			
+			/* Keep reference to the card for volume monitoring */
+			card = snd_card_ref(card_num);
+			if (card) {
+				omen_card = card;
+				/* Register volume monitoring */
+				omen_register_volume_monitor();
+			}
+		}
+
+		pr_info("HDA LED control initialized successfully (after retry)\n");
+		codec_retry_count = 0; /* Reset counter */
+		return;
+	}
+
+	/* If we haven't exhausted retries, schedule another attempt */
+	if (codec_retry_count < MAX_CODEC_RETRIES) {
+		pr_debug("Codec not found, scheduling retry %d/%d in %d seconds\n",
+			 codec_retry_count + 1, MAX_CODEC_RETRIES,
+			 CODEC_RETRY_DELAY_MS / 1000);
+		schedule_delayed_work(&codec_retry_work,
+				      msecs_to_jiffies(CODEC_RETRY_DELAY_MS));
+	} else {
+		pr_warn("Failed to find HDA codec after all %d retry attempts\n",
+			MAX_CODEC_RETRIES);
+		codec_retry_count = 0; /* Reset counter */
+	}
+}
+
+/**
  * omen_register_volume_monitor - Register volume change monitoring
  *
  * Sets up monitoring of volume/mute controls to auto-update LED
@@ -344,7 +403,15 @@ int omen_hda_led_init(void)
 		if (!omen_codec) {
 			pr_warn("Could not find HDA codec for LED control on any card\n");
 			pr_warn("Mute LED functionality will not be available\n");
-			return -ENODEV;
+			pr_info("Will retry codec discovery asynchronously (up to %d attempts, every %d seconds)\n", MAX_CODEC_RETRIES, CODEC_RETRY_DELAY_MS / 1000);
+
+			INIT_DELAYED_WORK(&codec_retry_work, codec_retry_work_handler);
+
+			codec_retry_count = 0;
+
+			schedule_delayed_work(&codec_retry_work, msecs_to_jiffies(CODEC_RETRY_DELAY_MS));
+
+			return 0;
 		}
 	}
 
@@ -378,6 +445,9 @@ void omen_hda_led_cleanup(void)
 {
 	/* Disable auto control and stop timer */
 	led_auto_control = false;
+	
+	cancel_delayed_work_sync(&codec_retry_work);
+	codec_retry_count = 0;
 	
 	if (mute_control) {
 		timer_delete_sync(&mute_check_timer);
