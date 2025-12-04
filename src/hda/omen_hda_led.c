@@ -51,6 +51,9 @@ static int codec_retry_count = 0;
 /* Check mute state every 200ms */
 #define MUTE_CHECK_INTERVAL_MS 200
 
+/* Forward declarations */
+static void omen_register_volume_monitor(void);
+
 /**
  * find_hda_codec_by_card_number - Find HDA codec by searching through devices
  * @card_num: Sound card number
