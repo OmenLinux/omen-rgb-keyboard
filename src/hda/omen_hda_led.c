@@ -45,8 +45,8 @@ static struct work_struct mute_check_work;
 static bool last_mute_state = false;
 static struct delayed_work codec_retry_work;
 static int codec_retry_count = 0;
-#define MAX_CODEC_RETRIES 10
-#define CODEC_RETRY_DELAY_MS 100000 /* 100 seconds */
+#define MAX_CODEC_RETRIES 20
+#define CODEC_RETRY_DELAY_MS 5000  /* 5 seconds */
 
 /* Check mute state every 200ms */
 #define MUTE_CHECK_INTERVAL_MS 200
