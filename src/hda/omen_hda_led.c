@@ -112,30 +112,89 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 }
 
 /**
+ * is_realtek_or_compatible_codec - Check if codec is suitable for LED control
+ * @codec: HDA codec to check
+ *
+ * Returns: true if codec is Realtek or other compatible audio codec, false for GPU codecs
+ */
+static bool is_realtek_or_compatible_codec(struct hda_codec *codec)
+{
+	unsigned int vendor_id;
+	
+	if (!codec)
+		return false;
+	
+	vendor_id = codec->core.vendor_id >> 16;
+	
+	/* Realtek codecs (0x10ec) - preferred */
+	if (vendor_id == 0x10ec) {
+		pr_debug("Found Realtek codec: 0x%08x\n", codec->core.vendor_id);
+		return true;
+	}
+	
+	/* Conexant (0x14f1), IDT/Sigmatel (0x111d), Cirrus (0x1013) - also good */
+	if (vendor_id == 0x14f1 || vendor_id == 0x111d || vendor_id == 0x1013) {
+		pr_debug("Found compatible audio codec: 0x%08x\n", codec->core.vendor_id);
+		return true;
+	}
+	
+	/* Skip NVIDIA (0x10de), AMD (0x1002), Intel (0x8086) HDMI/DP codecs */
+	if (vendor_id == 0x10de || vendor_id == 0x1002 || vendor_id == 0x8086) {
+		pr_debug("Skipping GPU/HDMI codec: 0x%08x\n", codec->core.vendor_id);
+		return false;
+	}
+	
+	/* For unknown vendors, accept them as potential candidates */
+	pr_debug("Found unknown vendor codec: 0x%08x\n", codec->core.vendor_id);
+	return true;
+}
+
+/**
  * find_hda_codec_any_card - Find HDA codec by scanning all sound cards
  *
  * Scans all available sound cards looking for an HDA codec.
- * Useful when the default card number doesn't work or for SOF systems.
+ * Prefers Realtek and other audio codecs over GPU HDMI codecs.
  *
  * Returns: pointer to hda_codec on success, NULL on failure
  */
 static struct hda_codec *find_hda_codec_any_card(void)
 {
 	struct hda_codec *codec;
+	struct hda_codec *fallback_codec = NULL;
 	int card_num;
 	
 	/* Try cards 0-7 */
 	for (card_num = 0; card_num < 8; card_num++) {
-		/* Try codec addresses 0-3 (most systems use 0) */
+		/* Try codec addresses 0-3 (most systems use 0 or 1) */
 		int codec_addr;
 		for (codec_addr = 0; codec_addr < 4; codec_addr++) {
 			codec = find_hda_codec_by_card_number(card_num, codec_addr);
 			if (codec) {
-				pr_info("HDA codec found on card %d, codec addr %d\n",
-					card_num, codec_addr);
-				return codec;
+				/* Check if this is a suitable codec */
+				if (is_realtek_or_compatible_codec(codec)) {
+					pr_info("Selected audio codec on card %d, addr %d (vendor: 0x%04x)\n",
+						card_num, codec_addr, codec->core.vendor_id >> 16);
+					return codec;
+				} else {
+					/* Keep as fallback if we don't find a better one */
+					if (!fallback_codec) {
+						fallback_codec = codec;
+						pr_debug("Keeping GPU codec as fallback: card %d, addr %d\n",
+							 card_num, codec_addr);
+					} else {
+						/* Release the card reference for this codec we're not using */
+						if (codec->card)
+							snd_card_unref(codec->card);
+					}
+				}
 			}
 		}
+	}
+	
+	/* If we only found GPU codecs, use the fallback */
+	if (fallback_codec) {
+		pr_warn("Only found GPU HDMI codec, mute LED may not work properly\n");
+		return fallback_codec;
 	}
 	
 	return NULL;
