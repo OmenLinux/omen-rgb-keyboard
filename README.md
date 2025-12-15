@@ -36,7 +36,7 @@ sudo pacman -S linux-headers base-devel alsa-lib
 sudo dnf install kernel-devel kernel-headers @development-tools dkms alsa-lib-devel
 
 # Ubuntu/Debian
-sudo apt install linux-headers-$(uname -r) build-essential libasound2-dev
+sudo apt install linux-headers-$(uname -r) build-essential libasound2t64
 ```
 
 **Note**: The ALSA libraries are required for the mute button LED control feature. The driver will still compile without them, but LED sync functionality will be disabled.
