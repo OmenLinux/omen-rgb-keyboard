@@ -24,7 +24,13 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 ## Supported Hardware
 
 - HP OMEN laptops with 4-zone RGB keyboard lighting
-- Tested on Omen 16 u0000sl
+
+| Model Series        | Status            |
+|---------------------|-------------------|
+| Omen 16-u0000sl     | Tested & working  |
+| Omen 16-wf1xxx      | Tested & working  |
+| Omen 16-wf0xxx      | Tested & working  |
+| Omen 14-fb0xxx      | Tested & working  |
 
 ## Installation
 
