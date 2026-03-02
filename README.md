@@ -28,6 +28,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 | Omen 16-u0000sl     | Tested & working  |
 | Omen 16-wf1xxx      | Tested & working  |
 | Omen 16-wf0xxx      | Tested & working  |
+| Omen 16-wd0xxx      | Tested & working  |
 | Omen 14-fb0xxx      | Tested & working  |
 
 ## Installation
@@ -66,6 +67,9 @@ sudo make install
 ```
 
 The module will be built and installed using DKMS, which will automatically rebuild it on kernel updates.
+
+> [!NOTE]
+> If you need to manually interact with DKMS, remember that the DKMS module name uses hyphens (`omen-rgb-keyboard`), while the loaded kernel module uses underscores (`omen_rgb_keyboard`).
 
 ### Automatic Loading on Boot
 The driver is configured to load automatically on boot. If you need to set this up manually:
@@ -348,6 +352,18 @@ ls -la /sys/devices/platform/omen-rgb-keyboard/rgb_zones/
 - Ensure you're using the correct hex format (6 characters, uppercase)
 - Check that brightness is not set to 0
 - Verify the module loaded without errors
+
+### Secure Boot (Key was rejected by service)
+If your Linux distribution enforces strict Secure Boot policies, the kernel will block unsigned drivers from loading, throwing an error like: `modprobe: ERROR: could not insert 'omen_rgb_keyboard': Key was rejected by service`.
+
+To resolve this, you must sign the kernel module using a trusted Machine Owner Key (MOK) so your UEFI firmware allows it to load. 
+
+* **If you already have existing keys** (you may already have a MOK/key pair, common if you previously set up Secure Boot module signing, e.g. for NVIDIA drivers): Configure DKMS to use your existing private key and public certificate before running `dkms install`. 
+* **If you do not have a MOK**: You will need to generate a key pair, enroll it in your firmware via `mokutil`, and script DKMS to use it. 
+
+For instructions and automated scripts to handle MOK generation and DKMS signing, see the [Community DKMS Signing Guide](https://gist.github.com/sbueringer/bd8cec239c44d66967cf307d808f10c4) or the [Arch Wiki DKMS Documentation](https://wiki.archlinux.org/title/Dynamic_Kernel_Module_Support#Secure_Boot).
+
+
 
 ## Technical Details
 
