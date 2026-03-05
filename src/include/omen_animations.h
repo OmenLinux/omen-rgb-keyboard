@@ -12,6 +12,9 @@
 
 #include <linux/device.h>
 #include <linux/types.h>
+#include <linux/mutex.h>
+
+#include "omen_zones.h"
 
 /* Animation system constants */
 #define ANIMATION_TIMER_INTERVAL_MS 50
@@ -30,18 +33,37 @@ enum animation_mode {
 	ANIMATION_CANDLE,
 	ANIMATION_AURORA,
 	ANIMATION_DISCO,
+	ANIMATION_GRADIENT,
 	ANIMATION_COUNT
+};
+
+/* Gradient animation constants */
+#define GRADIENT_MAX_COLORS 16
+#define GRADIENT_MAX_GROUPS 4
+
+struct gradient_group {
+	u8 zone_mask;
+	u8 color_count;
+	struct color_platform colors[GRADIENT_MAX_COLORS];
+};
+
+struct gradient_config {
+	u8 group_count;
+	struct gradient_group groups[GRADIENT_MAX_GROUPS];
 };
 
 /* External animation state */
 extern enum animation_mode current_animation;
 extern int animation_speed;
 extern bool animation_active;
+extern struct gradient_config gradient_cfg;
+extern struct mutex gradient_cfg_mutex;
 
 /* Device attributes for sysfs */
 extern struct device_attribute animation_brightness_attr;
 extern struct device_attribute animation_mode_attr;
 extern struct device_attribute animation_speed_attr;
+extern struct device_attribute gradient_config_attr;
 
 /**
  * animation_init - Initialize animation system

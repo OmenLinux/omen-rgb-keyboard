@@ -25,6 +25,8 @@ struct device_attribute *zone_dev_attrs;
 struct attribute **zone_attrs;
 struct platform_zone *zone_data;
 
+static struct platform_device *zone_platform_dev;
+
 struct platform_zone original_colors[ZONE_COUNT];
 int global_brightness = 100;
 
@@ -130,7 +132,7 @@ ssize_t zone_set(struct device *dev, struct device_attribute *attr,
 	int ret;
 	if (target_zone == NULL) {
 		pr_err("invalid target zone\n");
-		return 1;
+		return -EINVAL;
 	}
 	ret = parse_rgb(buf, target_zone);
 	if (ret)
@@ -271,27 +273,32 @@ int fourzone_setup(struct platform_device *dev)
 	u8 zone;
 	char buffer[10];
 	char *name;
+	int ret;
 
-	zone_dev_attrs = kcalloc(ZONE_COUNT + 4, sizeof(struct device_attribute),
+	zone_dev_attrs = kcalloc(ZONE_COUNT + 5, sizeof(struct device_attribute),
 				 GFP_KERNEL);
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
-	zone_attrs = kcalloc(ZONE_COUNT + 6, sizeof(struct attribute *),
+	zone_attrs = kcalloc(ZONE_COUNT + 7, sizeof(struct attribute *),
 			     GFP_KERNEL);
-	if (!zone_attrs)
-		return -ENOMEM;
+	if (!zone_attrs) {
+		ret = -ENOMEM;
+		goto err_free_dev_attrs;
+	}
 
 	zone_data = kcalloc(ZONE_COUNT, sizeof(struct platform_zone),
 			    GFP_KERNEL);
-	if (!zone_data)
-		return -ENOMEM;
+	if (!zone_data) {
+		ret = -ENOMEM;
+		goto err_free_zone_attrs;
+	}
 
 	for (u8 zone = 0; zone < ZONE_COUNT; zone++) {
 		zone_data[zone].offset = 25 + (zone * 3);
-		int ret = fourzone_update_led(&zone_data[zone], HPWMI_READ);
+		ret = fourzone_update_led(&zone_data[zone], HPWMI_READ);
 		if (ret)
-			return ret;
+			goto err_free_zone_data;
 
 		/* Store original colors */
 		original_colors[zone].colors.red = zone_data[zone].colors.red;
@@ -302,8 +309,10 @@ int fourzone_setup(struct platform_device *dev)
 	for (zone = 0; zone < ZONE_COUNT; zone++) {
 		sprintf(buffer, "zone%02hhX", zone);
 		name = kstrdup(buffer, GFP_KERNEL);
-		if (!name)
-			return -ENOMEM;
+		if (!name) {
+			ret = -ENOMEM;
+			goto err_free_names;
+		}
 
 		sysfs_attr_init(&zone_dev_attrs[zone].attr);
 		zone_dev_attrs[zone].attr.name = name;
@@ -325,16 +334,42 @@ int fourzone_setup(struct platform_device *dev)
 	zone_attrs[ZONE_COUNT + 1] = &animation_brightness_attr.attr;
 	zone_attrs[ZONE_COUNT + 2] = &animation_mode_attr.attr;
 	zone_attrs[ZONE_COUNT + 3] = &animation_speed_attr.attr;
-	zone_attrs[ZONE_COUNT + 4] = &dev_attr_mute_led.attr;
-	zone_attrs[ZONE_COUNT + 5] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 4] = &gradient_config_attr.attr;
+	zone_attrs[ZONE_COUNT + 5] = &dev_attr_mute_led.attr;
+	zone_attrs[ZONE_COUNT + 6] = NULL; /* NULL terminate the array */
 
 	zone_attribute_group.attrs = zone_attrs;
-	
-	return sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
+
+	ret = sysfs_create_group(&dev->dev.kobj, &zone_attribute_group);
+	if (ret)
+		goto err_free_names;
+
+	zone_platform_dev = dev;
+	return 0;
+
+err_free_names:
+	for (u8 z = 0; z < ZONE_COUNT; z++) {
+		if (zone_dev_attrs[z].attr.name)
+			kfree(zone_dev_attrs[z].attr.name);
+	}
+err_free_zone_data:
+	kfree(zone_data);
+	zone_data = NULL;
+err_free_zone_attrs:
+	kfree(zone_attrs);
+	zone_attrs = NULL;
+err_free_dev_attrs:
+	kfree(zone_dev_attrs);
+	zone_dev_attrs = NULL;
+	return ret;
 }
 
 void fourzone_cleanup(void)
 {
+	/* Remove sysfs group before freeing backing memory */
+	if (zone_platform_dev)
+		sysfs_remove_group(&zone_platform_dev->dev.kobj, &zone_attribute_group);
+
 	/* Free allocated zone attribute names */
 	if (zone_dev_attrs) {
 		for (u8 zone = 0; zone < ZONE_COUNT; zone++) {

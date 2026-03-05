@@ -77,6 +77,14 @@ int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 		goto out_free;
 	}
 
+	if (obj->buffer.length < sizeof(*bios_return)) {
+		pr_warn("WMI query 0x%x returned short buffer (%lu < %zu)\n",
+			query, (unsigned long)obj->buffer.length,
+			sizeof(*bios_return));
+		ret = -EINVAL;
+		goto out_free;
+	}
+
 	bios_return = (struct bios_return *)obj->buffer.pointer;
 	ret = bios_return->return_code;
 	if (ret) {
@@ -88,6 +96,11 @@ int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 
 	if (!outsize)
 		goto out_free;
+
+	if (obj->buffer.length <= sizeof(*bios_return)) {
+		memset(buffer, 0, outsize);
+		goto out_free;
+	}
 
 	actual_outsize = min(outsize, (int)(obj->buffer.length - sizeof(*bios_return)));
 	memcpy(buffer, obj->buffer.pointer + sizeof(*bios_return), actual_outsize);

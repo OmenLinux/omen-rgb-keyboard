@@ -21,6 +21,7 @@ struct animation_state {
 	int speed;
 	int brightness;
 	struct color_platform colors[ZONE_COUNT];
+	struct gradient_config gradient;
 };
 
 /**
