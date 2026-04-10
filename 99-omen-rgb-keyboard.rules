@@ -1,17 +1,37 @@
 # HP OMEN RGB Keyboard udev rules
 # This allows users in the 'input' group to control RGB keyboard settings
-# without requiring sudo privileges
+# without requiring sudo privileges.
+#
+# GROUP/MODE on the platform device do not apply to sysfs attributes under
+# rgb_zones/ (those inodes are created separately when the driver probes).
+# We chgrp those files when the driver binds (or on add if already bound).
 
-# Allow read/write access to RGB zones (zone00, zone01, zone02, zone03, all)
-SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/*}=="*", GROUP="input", MODE="0664"
+SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", GROUP="input", MODE="0664"
 
-# Allow read/write access to brightness control
-SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/brightness}=="*", GROUP="input", MODE="0664"
+# sysfs appears after probe; bind is emitted once the driver attaches (udev v247+).
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone00", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone01", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone02", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone03", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/all", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_mode", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state"
 
-# Allow read/write access to animation controls
-SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/animation_mode}=="*", GROUP="input", MODE="0664"
-SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/animation_speed}=="*", GROUP="input", MODE="0664"
-
-# Allow read/write access to mute LED controls
-SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/mute_led}=="*", GROUP="input", MODE="0664"
-SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ATTR{rgb_zones/mute_state}=="*", GROUP="input", MODE="0664"
+# Built-in driver or synchronous probe: device may uevent with DRIVER already set.
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}=="omen-rgb-keyboard", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone00", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone01", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone02", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone03", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/all", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_mode", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state"

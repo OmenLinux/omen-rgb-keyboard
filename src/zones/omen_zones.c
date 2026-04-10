@@ -266,7 +266,7 @@ static ssize_t mute_led_set(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static DEVICE_ATTR(mute_led, 0644, mute_led_show, mute_led_set);
+static DEVICE_ATTR(mute_led, 0664, mute_led_show, mute_led_set);
 
 static ssize_t mute_state_show(struct device *dev, struct device_attribute *attr,
 			       char *buf)
@@ -292,7 +292,7 @@ static ssize_t mute_state_set(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static DEVICE_ATTR(mute_state, 0644, mute_state_show, mute_state_set);
+static DEVICE_ATTR(mute_state, 0664, mute_state_show, mute_state_set);
 
 int fourzone_setup(struct platform_device *dev)
 {
@@ -342,7 +342,7 @@ int fourzone_setup(struct platform_device *dev)
 
 		sysfs_attr_init(&zone_dev_attrs[zone].attr);
 		zone_dev_attrs[zone].attr.name = name;
-		zone_dev_attrs[zone].attr.mode = 0644;
+		zone_dev_attrs[zone].attr.mode = 0664;
 		zone_dev_attrs[zone].show = zone_show;
 		zone_dev_attrs[zone].store = zone_set;
 		zone_data[zone].offset = 25 + (zone * 3);
@@ -352,7 +352,7 @@ int fourzone_setup(struct platform_device *dev)
 
 	sysfs_attr_init(&zone_dev_attrs[ZONE_COUNT].attr);
 	zone_dev_attrs[ZONE_COUNT].attr.name = "all";
-	zone_dev_attrs[ZONE_COUNT].attr.mode = 0644;
+	zone_dev_attrs[ZONE_COUNT].attr.mode = 0664;
 	zone_dev_attrs[ZONE_COUNT].show = all_show;
 	zone_dev_attrs[ZONE_COUNT].store = all_set;
 	zone_attrs[ZONE_COUNT] = &zone_dev_attrs[ZONE_COUNT].attr;

@@ -21,7 +21,9 @@ while true; do
 			state="0"
 		fi
 		if [ "$first" = true ] || [ "$state" != "$last" ]; then
-			echo "$state" > "$SYSFS" 2>/dev/null
+			if ! printf '%s\n' "$state" > "$SYSFS"; then
+				echo "omen-mute-monitor: failed to write $state to $SYSFS" >&2
+			fi
 			last="$state"
 			first=false
 		fi

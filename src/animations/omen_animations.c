@@ -650,10 +650,10 @@ static ssize_t gradient_config_set(struct device *dev, struct device_attribute *
 	return count;
 }
 
-struct device_attribute animation_brightness_attr = __ATTR(brightness, 0644, brightness_show, brightness_set);
-struct device_attribute animation_mode_attr = __ATTR(animation_mode, 0644, animation_mode_show, animation_mode_set);
-struct device_attribute animation_speed_attr = __ATTR(animation_speed, 0644, animation_speed_show, animation_speed_set);
-struct device_attribute gradient_config_attr = __ATTR(gradient_config, 0644, gradient_config_show, gradient_config_set);
+struct device_attribute animation_brightness_attr = __ATTR(brightness, 0664, brightness_show, brightness_set);
+struct device_attribute animation_mode_attr = __ATTR(animation_mode, 0664, animation_mode_show, animation_mode_set);
+struct device_attribute animation_speed_attr = __ATTR(animation_speed, 0664, animation_speed_show, animation_speed_set);
+struct device_attribute gradient_config_attr = __ATTR(gradient_config, 0664, gradient_config_show, gradient_config_set);
 
 void animation_init(void)
 {

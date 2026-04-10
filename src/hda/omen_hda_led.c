@@ -271,9 +271,12 @@ static void codec_retry_work_handler(struct work_struct *work)
 		pr_info("HDA LED control initialized successfully (after retry)\n");
 		pr_info("Mute LED will be controlled via userspace daemon (PipeWire/Bluetooth)\n");
 		
-		/* Initialize LED to off (unmuted) - userspace daemon will set correct state */
+		/* Sync LED: honor mute_state already written before codec was ready */
 		if (led_auto_control && omen_codec) {
-			omen_hda_led_set_internal(false);
+			if (use_external_mute)
+				omen_hda_led_set_internal(external_mute_state);
+			else
+				omen_hda_led_set_internal(false);
 		}
 		
 		codec_retry_count = 0; /* Reset counter */
@@ -334,9 +337,11 @@ int omen_hda_led_init(void)
 	pr_info("HDA LED control initialized successfully\n");
 	pr_info("Mute LED will be controlled via userspace daemon (PipeWire/Bluetooth)\n");
 	
-	/* Initialize LED to off (unmuted) - userspace daemon will set correct state */
 	if (led_auto_control && omen_codec) {
-		omen_hda_led_set_internal(false);
+		if (use_external_mute)
+			omen_hda_led_set_internal(external_mute_state);
+		else
+			omen_hda_led_set_internal(false);
 	}
 	
 	return 0;
@@ -381,17 +386,23 @@ void omen_hda_led_cleanup(void)
  */
 int omen_hda_led_set_mute_state(bool muted)
 {
+	int ret;
+
 	external_mute_state = muted;
 	use_external_mute = true;
-	
-	/* Immediately update LED if auto-control is enabled */
-	if (led_auto_control && omen_codec) {
-		pr_info("Setting mute LED to %s (from userspace)\n", muted ? "ON" : "OFF");
-		omen_hda_led_set_internal(muted);
-	} else {
-		pr_warn("Cannot set LED: auto_control=%d, codec=%p\n", 
-			led_auto_control, omen_codec);
+
+	if (!led_auto_control)
+		return -EIO;
+	if (!omen_codec) {
+		/* State is kept for when codec appears (retry worker or next boot). */
+		pr_debug("Mute LED: %s queued (HDA codec not ready yet)\n",
+			 muted ? "ON" : "OFF");
+		return 0;
 	}
-	
-	return 0;
+
+	pr_info("Setting mute LED to %s (from userspace)\n", muted ? "ON" : "OFF");
+	ret = omen_hda_led_set_internal(muted);
+	if (ret < 0)
+		pr_warn("HDA mute LED update failed: %d\n", ret);
+	return ret;
 }

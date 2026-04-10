@@ -30,6 +30,16 @@ echo "Reloading udev rules..."
 udevadm control --reload-rules
 udevadm trigger
 
+# Re-apply sysfs ownership if the device is already present (no reboot needed)
+OMEN_SYSFS="/sys/devices/platform/omen-rgb-keyboard"
+if [ -d "$OMEN_SYSFS/rgb_zones" ]; then
+    echo "Refreshing permissions on $OMEN_SYSFS/rgb_zones ..."
+    udevadm trigger -c bind "$OMEN_SYSFS" 2>/dev/null || udevadm trigger "$OMEN_SYSFS"
+    udevadm settle -t 5
+    # Synthetic events may not re-run RUN on all systems; chgrp now while we are root.
+    chgrp input "$OMEN_SYSFS"/rgb_zones/* 2>/dev/null || true
+fi
+
 # Add user to input group if not already a member
 if ! groups "$REAL_USER" | grep -q "\binput\b"; then
     echo "Adding user '$REAL_USER' to 'input' group..."
