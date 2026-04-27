@@ -6,6 +6,7 @@ ccflags-y := -I$(src)/include
 # Module components organized by directory
 omen_rgb_keyboard-y := \
 	wmi/omen_wmi.o \
+	fan/omen_fan.o \
 	zones/omen_zones.o \
 	animations/omen_animations.o \
 	state/omen_state.o \

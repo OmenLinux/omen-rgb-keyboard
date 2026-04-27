@@ -4,9 +4,9 @@ Linux kernel driver for HP OMEN laptop RGB keyboard lighting. Controls 4-zone RG
 
 Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-omen-linux-module) by James Churchill (@pelrun).
 
-> [!TIP]  
-> Need help or want to chat? Join our **official Discord server** for support, questions, or to show off your RGB setups:  
-> **[➡️ Click here to join Discord](https://discord.gg/8UwyAJ7sBH)**  
+> [!TIP]
+> Need help or want to chat? Join our **official Discord server** for support, questions, or to show off your RGB setups:
+> **[➡️ Click here to join Discord](https://discord.gg/8UwyAJ7sBH)**
 
 ## Features
 
@@ -16,6 +16,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - **11 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
 - **Mute Button LED Control** - Automatic LED sync with system mute state via HDA codec
+- **Fan control** - RPM readout, max fan, thermal presets (silent / normal / performance) with built-in curves, optional custom curves (see below)
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
 
@@ -133,7 +134,7 @@ The driver creates sysfs attributes in `/sys/devices/platform/omen-rgb-keyboard/
 # Set zone 0 to red
 echo "FF0000" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone00
 
-# Set zone 1 to green  
+# Set zone 1 to green
 echo "00FF00" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone01
 
 # Set zone 2 to blue
@@ -220,11 +221,49 @@ cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone01
 # etc...
 ```
 
+### Fan control (`/sys/devices/platform/omen-rgb-keyboard/fan/`)
+
+Requires the same HP WMI GUID as RGB; **blacklist `hp_wmi`** if both would load (see above). Fan curves need a WMI path, a valid BIOS fan table, and **`CONFIG_THERMAL`** in your kernel so a thermal zone can be read.
+
+| File | Purpose |
+|------|---------|
+| `cpu_fan_rpm`, `gpu_fan_rpm` | Read-only RPM (where supported) |
+| `max_fan` | `0` / `1` — automatic vs max fans |
+| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset); read maps EC where possible |
+| `fan_curve` | Read/write the active curve (see **Fan curve format** below) |
+| `fan_curve_enable` | `0` stops the curve worker; `1` starts it (uses current `fan_curve` points) |
+| `fan_temp_zone` | Optional thermal zone name (e.g. `x86_pkg_temp`); if unset, the driver tries common zone names |
+
+After a successful `thermal_profile` write, built-in preset curves are copied into `fan_curve` and the worker starts automatically unless you previously set `fan_curve_enable` to `0` (manual off). Enabling **max fan** disables the curve path. Custom points overwrite `fan_curve`; switching `thermal_profile` again replaces them with that preset’s built-in steps.
+
+With udev rules installed, users in the `input` group can use `tee` on these files without `sudo`, same as RGB.
+
+#### Fan curve format
+
+Curves are **space-separated** pairs:
+
+**`temperature_C:fan_percent`**
+
+- **Temperature:** degrees Celsius from the selected thermal zone (typically CPU package).
+- **Fan percent:** `0`–`100`, mapped by the driver into the EC’s allowed fan range using the BIOS fan table.
+
+You need **at least 2** points and may use **up to 8** points per curve. Order does not matter; the driver sorts by temperature. Between two adjacent points the driver **linearly interpolates** fan percent vs temperature; below the lowest point it clamps to that point’s percent, and above the highest it clamps to the last point’s percent.
+
+Example (seven steps):
+
+```bash
+F=/sys/devices/platform/omen-rgb-keyboard/fan
+echo "30:20 40:28 50:38 60:50 72:65 82:78 92:90" | tee "$F/fan_curve"
+echo 1 | tee "$F/fan_curve_enable"
+```
+
+Built-in silent / normal / performance presets use five points each; your custom curve can use any count from 2 to 8.
+
 ### Color Format
 
 Colors are specified in RGB hex format:
 - `FF0000` = Red
-- `00FF00` = Green  
+- `00FF00` = Green
 - `0000FF` = Blue
 - `FFFFFF` = White
 - `000000` = Black (off)
@@ -394,10 +433,10 @@ ls -la /sys/devices/platform/omen-rgb-keyboard/rgb_zones/
 ### Secure Boot (Key was rejected by service)
 If your Linux distribution enforces strict Secure Boot policies, the kernel will block unsigned drivers from loading, throwing an error like: `modprobe: ERROR: could not insert 'omen_rgb_keyboard': Key was rejected by service`.
 
-To resolve this, you must sign the kernel module using a trusted Machine Owner Key (MOK) so your UEFI firmware allows it to load. 
+To resolve this, you must sign the kernel module using a trusted Machine Owner Key (MOK) so your UEFI firmware allows it to load.
 
-* **If you already have existing keys** (you may already have a MOK/key pair, common if you previously set up Secure Boot module signing, e.g. for NVIDIA drivers): Configure DKMS to use your existing private key and public certificate before running `dkms install`. 
-* **If you do not have a MOK**: You will need to generate a key pair, enroll it in your firmware via `mokutil`, and script DKMS to use it. 
+* **If you already have existing keys** (you may already have a MOK/key pair, common if you previously set up Secure Boot module signing, e.g. for NVIDIA drivers): Configure DKMS to use your existing private key and public certificate before running `dkms install`.
+* **If you do not have a MOK**: You will need to generate a key pair, enroll it in your firmware via `mokutil`, and script DKMS to use it.
 
 For instructions and automated scripts to handle MOK generation and DKMS signing, see the [Community DKMS Signing Guide](https://gist.github.com/sbueringer/bd8cec239c44d66967cf307d808f10c4) or the [Arch Wiki DKMS Documentation](https://wiki.archlinux.org/title/Dynamic_Kernel_Module_Support#Secure_Boot).
 

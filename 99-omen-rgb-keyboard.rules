@@ -20,7 +20,19 @@ ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
-  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state"
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/cpu_fan_rpm", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/gpu_fan_rpm", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/max_fan", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/thermal_profile", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/fan_curve", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/fan_curve_enable", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/fan_temp_zone", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/max_fan", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/thermal_profile", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/fan_curve", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/fan_curve_enable", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/fan_temp_zone"
 
 # Built-in driver or synchronous probe: device may uevent with DRIVER already set.
 ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}=="omen-rgb-keyboard", \
@@ -34,4 +46,16 @@ ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}==
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
-  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state"
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/cpu_fan_rpm", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/gpu_fan_rpm", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/max_fan", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/thermal_profile", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/fan_curve", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/fan_curve_enable", \
+  RUN+="/bin/chgrp input /sys$devpath/fan/fan_temp_zone", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/max_fan", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/thermal_profile", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/fan_curve", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/fan_curve_enable", \
+  RUN+="/bin/chmod g+w /sys$devpath/fan/fan_temp_zone"

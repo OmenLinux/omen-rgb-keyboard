@@ -16,6 +16,7 @@
 
 #include "omen_rgb_keyboard.h"
 #include "omen_wmi.h"
+#include "omen_fan.h"
 #include "omen_zones.h"
 #include "omen_animations.h"
 #include "omen_state.h"
@@ -44,7 +45,11 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		animation_cleanup();
 		return ret;
 	}
-	
+
+	ret = omen_fan_setup(device);
+	if (ret)
+		pr_warn("Fan control sysfs unavailable: %d\n", ret);
+
 	/* Setup input device for Omen key handling */
 	ret = hp_wmi_input_setup();
 	if (ret) {
@@ -116,6 +121,8 @@ static void __exit hp_wmi_exit(void)
 	/* Stop animations and cleanup */
 	animation_cleanup();
 	
+	omen_fan_cleanup();
+
 	/* Cleanup zones */
 	fourzone_cleanup();
 	

@@ -39,6 +39,10 @@ if [ -d "$OMEN_SYSFS/rgb_zones" ]; then
     # Synthetic events may not re-run RUN on all systems; chgrp now while we are root.
     chgrp input "$OMEN_SYSFS"/rgb_zones/* 2>/dev/null || true
 fi
+if [ -d "$OMEN_SYSFS/fan" ]; then
+    echo "Refreshing permissions on $OMEN_SYSFS/fan ..."
+    chgrp input "$OMEN_SYSFS"/fan/* 2>/dev/null || true
+fi
 
 # Add user to input group if not already a member
 if ! groups "$REAL_USER" | grep -q "\binput\b"; then
