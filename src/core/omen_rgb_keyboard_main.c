@@ -46,6 +46,10 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		return ret;
 	}
 
+	ret = devm_led_classdev_register(&device->dev, &omen_kbd_led);
+	if (ret)
+		pr_warn("Failed to register keyboard LED classdev: %d\n", ret);
+
 	ret = omen_fan_setup(device);
 	if (ret)
 		pr_warn("Fan control sysfs unavailable: %d\n", ret);

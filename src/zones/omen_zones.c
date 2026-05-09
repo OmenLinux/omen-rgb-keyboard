@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <linux/leds.h>
 #include <linux/string.h>
 
 #include "omen_rgb_keyboard.h"
@@ -29,6 +30,8 @@ static struct platform_device *zone_platform_dev;
 
 struct platform_zone original_colors[ZONE_COUNT];
 int global_brightness = 100;
+
+struct led_classdev omen_kbd_led;
 
 static struct attribute_group zone_attribute_group = {
 	.name = "rgb_zones",
@@ -110,6 +113,40 @@ void update_all_zones_with_colors(struct color_platform colors[ZONE_COUNT])
 	}
 }
 
+static int omen_apply_brightness(unsigned long level)
+{
+	int ret;
+
+	if (level > 100)
+		level = 100;
+
+	global_brightness = level;
+
+	for (int zone = 0; zone < ZONE_COUNT; zone++) {
+		zone_data[zone].colors.red = (original_colors[zone].colors.red * level) / 100;
+		zone_data[zone].colors.green = (original_colors[zone].colors.green * level) / 100;
+		zone_data[zone].colors.blue = (original_colors[zone].colors.blue * level) / 100;
+
+		ret = fourzone_update_led(&zone_data[zone], HPWMI_WRITE);
+		if (ret)
+			return ret;
+	}
+
+	save_animation_state();
+	return 0;
+}
+
+enum led_brightness omen_kbd_brightness_get(struct led_classdev *led_cdev)
+{
+	return global_brightness;
+}
+
+int omen_kbd_brightness_set(struct led_classdev *led_cdev,
+			    enum led_brightness value)
+{
+	return omen_apply_brightness(value);
+}
+
 ssize_t zone_show(struct device *dev, struct device_attribute *attr,
 		  char *buf)
 {
@@ -174,24 +211,10 @@ ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
 
 	if (kstrtoul(buf, 10, &level))
 		return -EINVAL;
-	if (level > 100)
-		level = 100;
 
-	global_brightness = level;
-
-	for (int zone = 0; zone < ZONE_COUNT; zone++) {
-		/* Use the stored original colors and apply brightness */
-		zone_data[zone].colors.red = (original_colors[zone].colors.red * level) / 100;
-		zone_data[zone].colors.green = (original_colors[zone].colors.green * level) / 100;
-		zone_data[zone].colors.blue = (original_colors[zone].colors.blue * level) / 100;
-
-		ret = fourzone_update_led(&zone_data[zone], HPWMI_WRITE);
-		if (ret)
-			return ret;
-	}
-
-	/* Save state */
-	save_animation_state();
+	ret = omen_apply_brightness(level);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -372,6 +395,10 @@ int fourzone_setup(struct platform_device *dev)
 		goto err_free_names;
 
 	zone_platform_dev = dev;
+	omen_kbd_led.name = "omen::kbd_backlight";
+	omen_kbd_led.max_brightness = 100;
+	omen_kbd_led.brightness_set_blocking = omen_kbd_brightness_set;
+	omen_kbd_led.brightness_get = omen_kbd_brightness_get;
 	return 0;
 
 err_free_names:
