@@ -11,6 +11,7 @@
 #define OMEN_ZONES_H
 
 #include <linux/device.h>
+#include <linux/leds.h>
 #include <linux/types.h>
 #include <linux/platform_device.h>
 
@@ -34,6 +35,7 @@ struct platform_zone {
 extern struct platform_zone *zone_data;
 extern struct platform_zone original_colors[ZONE_COUNT];
 extern int global_brightness;
+extern struct led_classdev omen_kbd_led;
 
 /**
  * parse_rgb - Parse hex RGB color string into platform_zone
@@ -81,9 +83,13 @@ ssize_t all_show(struct device *dev, struct device_attribute *attr, char *buf);
 ssize_t all_set(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count);
 ssize_t brightness_show(struct device *dev, struct device_attribute *attr,
-			char *buf);
+			 char *buf);
 ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
-		       const char *buf, size_t count);
+	       const char *buf, size_t count);
+
+enum led_brightness omen_kbd_brightness_get(struct led_classdev *led_cdev);
+int omen_kbd_brightness_set(struct led_classdev *led_cdev,
+			    enum led_brightness value);
 
 /**
  * fourzone_setup - Initialize zone management system
