@@ -29,6 +29,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 | Omen 16-u0000sl     | Tested & working  |
 | Omen 16-wf1xxx      | Tested & working  |
 | Omen 16-wf0xxx      | Tested & working  |
+| Omen 15-en1004ns    | Tested & working  |
 | Omen 16-wd0xxx      | Tested & working  |
 | Omen 14-fb0xxx      | Tested & working  |
 
