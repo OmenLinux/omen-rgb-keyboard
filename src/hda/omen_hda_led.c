@@ -59,7 +59,7 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 	struct snd_card *card;
 	struct list_head *p;
 	struct hda_codec *found_codec = NULL;
-	
+	int hwdep_count = 0;
 	/* Get the sound card */
 	card = snd_card_ref(card_num);
 	if (!card) {
@@ -77,7 +77,8 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 		/* Check if this is a hwdep device */
 		if (dev->type == SNDRV_DEV_HWDEP) {
 			struct snd_hwdep *hwdep = dev->device_data;
-			
+
+			hwdep_count++;
 			if (hwdep && hwdep->private_data) {
 				struct hda_codec *codec = hwdep->private_data;
 				
@@ -96,7 +97,11 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 		}
 	}
 	
-	pr_debug("Codec %d not found on card %d\n", codec_addr, card_num);
+	pr_debug("Codec %d not found on card %d (hwdep devices: %d)\n",
+		 codec_addr, card_num, hwdep_count);
+	if (card_num == DEFAULT_HDA_CARD && !hwdep_count)
+		pr_info("Card %d (%s) is present but HDA codec hwdep is not registered yet\n",
+			card_num, card->shortname);
 	snd_card_unref(card);
 	return NULL;
 }
@@ -140,53 +145,64 @@ static bool is_realtek_or_compatible_codec(struct hda_codec *codec)
 }
 
 /**
- * find_hda_codec_any_card - Find HDA codec by scanning all sound cards
+ * release_hda_codec_ref - Drop a card reference acquired during codec lookup
+ * @codec: HDA codec whose card reference should be released
+ */
+static void release_hda_codec_ref(struct hda_codec *codec)
+{
+	if (codec && codec->card)
+		snd_card_unref(codec->card);
+}
+
+/**
+ * find_suitable_hda_codec - Find a Realtek/compatible HDA codec for LED control
  *
- * Scans all available sound cards looking for an HDA codec.
- * Prefers Realtek and other audio codecs over GPU HDMI codecs.
+ * Scans sound cards looking for an audio codec suitable for mute LED verbs.
+ * GPU HDMI/DP codecs are ignored. The default card (usually hwC1D0) is tried
+ * first so laptop Realtek codecs win over earlier-probing GPU codecs.
  *
  * Returns: pointer to hda_codec on success, NULL on failure
  */
-static struct hda_codec *find_hda_codec_any_card(void)
+static struct hda_codec *find_suitable_hda_codec(void)
 {
 	struct hda_codec *codec;
-	struct hda_codec *fallback_codec = NULL;
-	int card_num;
-	
-	/* Try cards 0-7 */
-	for (card_num = 0; card_num < 8; card_num++) {
-		/* Try codec addresses 0-3 (most systems use 0 or 1) */
+	int card_order[8];
+	int i, card_idx;
+	bool saw_gpu_codec = false;
+
+	/* Prefer the laptop audio card before scanning GPU HDMI cards */
+	card_order[0] = DEFAULT_HDA_CARD;
+	card_idx = 1;
+	for (i = 0; i < 8; i++) {
+		if (i != DEFAULT_HDA_CARD)
+			card_order[card_idx++] = i;
+	}
+
+	for (i = 0; i < 8; i++) {
+		int card_num = card_order[i];
 		int codec_addr;
+
 		for (codec_addr = 0; codec_addr < 4; codec_addr++) {
 			codec = find_hda_codec_by_card_number(card_num, codec_addr);
-			if (codec) {
-				/* Check if this is a suitable codec */
-				if (is_realtek_or_compatible_codec(codec)) {
-					pr_info("Selected audio codec on card %d, addr %d (vendor: 0x%04x)\n",
-						card_num, codec_addr, codec->core.vendor_id >> 16);
-					return codec;
-				} else {
-					/* Keep as fallback if we don't find a better one */
-					if (!fallback_codec) {
-						fallback_codec = codec;
-						pr_debug("Keeping GPU codec as fallback: card %d, addr %d\n",
-							 card_num, codec_addr);
-					} else {
-						/* Release the card reference for this codec we're not using */
-						if (codec->card)
-							snd_card_unref(codec->card);
-					}
-				}
+			if (!codec)
+				continue;
+
+			if (is_realtek_or_compatible_codec(codec)) {
+				pr_info("Selected audio codec on card %d, addr %d (vendor: 0x%04x)\n",
+					card_num, codec_addr, codec->core.vendor_id >> 16);
+				return codec;
 			}
+
+			saw_gpu_codec = true;
+			pr_debug("Ignoring unsuitable codec on card %d, addr %d: %s\n",
+				 card_num, codec_addr, codec->core.chip_name);
+			release_hda_codec_ref(codec);
 		}
 	}
-	
-	/* If we only found GPU codecs, use the fallback */
-	if (fallback_codec) {
-		pr_warn("Only found GPU HDMI codec, mute LED may not work properly\n");
-		return fallback_codec;
-	}
-	
+
+	if (saw_gpu_codec)
+		pr_info("Found GPU HDMI codec(s) but no suitable audio codec yet; will keep retrying\n");
+
 	return NULL;
 }
 
@@ -263,8 +279,8 @@ static void codec_retry_work_handler(struct work_struct *work)
 	pr_debug("Retry attempt %d/%d: searching for HDA codec\n",
 		 codec_retry_count, MAX_CODEC_RETRIES);
 
-	/* Try to find the codec */
-	omen_codec = find_hda_codec_any_card();
+	/* Try to find a suitable audio codec (Realtek, etc.) */
+	omen_codec = find_suitable_hda_codec();
 
 	if (omen_codec) {
 		pr_info("HDA codec found on retry attempt %d\n", codec_retry_count);
@@ -308,30 +324,24 @@ static void codec_retry_work_handler(struct work_struct *work)
 int omen_hda_led_init(void)
 {
 	pr_debug("Initializing HDA LED control\n");
-	
-	/* Try to find the codec on card 1, device 0 (matches hwC1D0) */
-	omen_codec = find_hda_codec_by_card_number(DEFAULT_HDA_CARD, DEFAULT_HDA_CODEC);
-	
+
+	omen_codec = find_suitable_hda_codec();
+
 	if (!omen_codec) {
-		pr_info("Codec not found on default card %d, scanning all cards...\n", 
+		pr_info("Codec not found on default card %d yet, will scan again asynchronously\n",
 			DEFAULT_HDA_CARD);
-		
-		/* Try scanning all available cards */
-		omen_codec = find_hda_codec_any_card();
-		
-		if (!omen_codec) {
-			pr_warn("Could not find HDA codec for LED control on any card\n");
-			pr_warn("Mute LED functionality will not be available\n");
-			pr_info("Will retry codec discovery asynchronously (up to %d attempts, every %d seconds)\n", MAX_CODEC_RETRIES, CODEC_RETRY_DELAY_MS / 1000);
+		pr_warn("Could not find HDA codec for LED control on any card\n");
+		pr_warn("Mute LED functionality will not be available until codec is ready\n");
+		pr_info("Will retry codec discovery asynchronously (up to %d attempts, every %d seconds)\n",
+			MAX_CODEC_RETRIES, CODEC_RETRY_DELAY_MS / 1000);
 
-			INIT_DELAYED_WORK(&codec_retry_work, codec_retry_work_handler);
+		INIT_DELAYED_WORK(&codec_retry_work, codec_retry_work_handler);
 
-			codec_retry_count = 0;
+		codec_retry_count = 0;
 
-			schedule_delayed_work(&codec_retry_work, msecs_to_jiffies(CODEC_RETRY_DELAY_MS));
+		schedule_delayed_work(&codec_retry_work, msecs_to_jiffies(CODEC_RETRY_DELAY_MS));
 
-			return 0;
-		}
+		return 0;
 	}
 
 	pr_info("HDA LED control initialized successfully\n");
