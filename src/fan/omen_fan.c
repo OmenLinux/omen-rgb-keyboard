@@ -5,7 +5,8 @@
  * RPM read, max fan, OMEN thermal profiles (WMI: silent / normal /
  * performance) each with a built-in fan curve when Victus WMI + fan table +
  * CONFIG_THERMAL are available; optional custom curve via fan_curve sysfs.
- * CPU PL1/PL2 and GPU CTGP/PPAB follow mainline hp-wmi (Victus-S path).
+ * CPU PL1/PL2 and GPU CTGP/PPAB follow mainline hp-wmi (Victus-S path):
+ * silent and normal share the thermal WMI byte; CTGP/PPAB distinguish them.
  * Registers with the ACPI platform_profile class so power-profiles-daemon
  * (PPD) can drive the same silent/normal/performance modes.
  *
@@ -58,10 +59,11 @@ enum omen_fan_iface {
 
 #define MAX_CURVE_POINTS	8
 
-/* OMEN EC / WMI profile bytes (hp-wmi omen v0 / v1) */
+/* OMEN / Victus EC / WMI profile bytes (mainline hp-wmi) */
 #define OMEN_V0_DEFAULT		0x00
 #define OMEN_V0_PERFORMANCE	0x01
 #define OMEN_V0_COOL		0x02
+#define VICTUS_QUIET		0x03
 #define OMEN_V1_DEFAULT		0x30
 #define OMEN_V1_PERFORMANCE	0x31
 #define OMEN_V1_COOL		0x50
@@ -123,6 +125,8 @@ static struct notifier_block power_source_nb;
 static bool power_source_nb_registered;
 
 static void fan_preset_curve_install(const char *name);
+static int fan_victus_wmi_speed_set(u8 cpu_spd);
+static int fan_temp_zone_bind_default(void);
 
 #if IS_REACHABLE(CONFIG_ACPI_PLATFORM_PROFILE)
 /*
@@ -392,14 +396,54 @@ static enum platform_profile_option omen_name_to_pp(const char *name)
 }
 #endif
 
+/*
+ * After a thermal preset change: install the built-in curve and start the
+ * worker unless the user previously forced fan_curve_enable=0. If the curve
+ * path cannot run, force WMI automatic so a prior manual speed cannot stick
+ * (that looked like "fans locked on silent" under PPD performance).
+ */
 static void fan_curve_after_profile(const char *name)
 {
+	int can_curve = 0;
+	int release_manual = 0;
+
 	mutex_lock(&fan_lock);
 	fan_preset_curve_install(name);
 
-	if (curve_enabled && !max_fan_state && fan_iface == OMEN_FAN_IF_VICTUS_S &&
-	    fan_tbl_valid)
+	can_curve = !fan_curve_manual_off && !max_fan_state &&
+		    fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid &&
+		    curve_num_points >= 2;
+
+	if (can_curve) {
+#if IS_ENABLED(CONFIG_THERMAL)
+		if (fan_temp_zone_bind_default()) {
+			pr_debug("thermal zone unavailable; using EC automatic fans\n");
+			can_curve = 0;
+		}
+#else
+		can_curve = 0;
+#endif
+	}
+
+	if (can_curve) {
+		curve_enabled = true;
 		schedule_delayed_work(&fan_curve_work, 1);
+		mutex_unlock(&fan_lock);
+		return;
+	}
+
+	if (curve_enabled || fan_iface == OMEN_FAN_IF_VICTUS_S)
+		release_manual = !max_fan_state;
+	curve_enabled = false;
+	mutex_unlock(&fan_lock);
+
+	if (!release_manual)
+		return;
+
+	cancel_delayed_work_sync(&fan_curve_work);
+	mutex_lock(&fan_lock);
+	if (!max_fan_state && fan_iface == OMEN_FAN_IF_VICTUS_S)
+		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
 	mutex_unlock(&fan_lock);
 }
 
@@ -409,21 +453,37 @@ static void fan_curve_after_profile(const char *name)
  */
 static int fan_thermal_profile_apply(const char *name, bool from_pp)
 {
-	u8 v1, v0;
+	u8 primary, fallback;
 	int ret;
 #if IS_REACHABLE(CONFIG_ACPI_PLATFORM_PROFILE)
 	enum platform_profile_option pp;
 #endif
 
+	/*
+	 * Mainline Victus-S: low_power and balanced share the same thermal
+	 * WMI byte; CTGP/PPAB distinguish them. COOL (0x50/0x02) is a separate
+	 * "cool" mode (more aggressive fans), not silent — never map silent
+	 * there or PPD power-saver fights performance and EC reads look stuck.
+	 *
+	 * Prefer Victus-S bytes (0x00/0x01) when that fan interface is active,
+	 * else Omen v1 (0x30/0x31), with the other as fallback.
+	 */
 	if (sysfs_streq(name, "performance")) {
-		v1 = OMEN_V1_PERFORMANCE;
-		v0 = OMEN_V0_PERFORMANCE;
-	} else if (sysfs_streq(name, "normal")) {
-		v1 = OMEN_V1_DEFAULT;
-		v0 = OMEN_V0_DEFAULT;
-	} else if (sysfs_streq(name, "silent")) {
-		v1 = OMEN_V1_COOL;
-		v0 = OMEN_V0_COOL;
+		if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
+			primary = OMEN_V0_PERFORMANCE;
+			fallback = OMEN_V1_PERFORMANCE;
+		} else {
+			primary = OMEN_V1_PERFORMANCE;
+			fallback = OMEN_V0_PERFORMANCE;
+		}
+	} else if (sysfs_streq(name, "normal") || sysfs_streq(name, "silent")) {
+		if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
+			primary = OMEN_V0_DEFAULT;
+			fallback = OMEN_V1_DEFAULT;
+		} else {
+			primary = OMEN_V1_DEFAULT;
+			fallback = OMEN_V0_DEFAULT;
+		}
 	} else {
 		return -EINVAL;
 	}
@@ -431,9 +491,9 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 	/* Same user-define kick mainline uses before profile changes. */
 	fan_victus_userdefine_trigger();
 
-	ret = fan_wmi_performance_set(v1);
+	ret = fan_wmi_performance_set(primary);
 	if (ret == HPWMI_RET_INVALID_PARAMETERS)
-		ret = fan_wmi_performance_set(v0);
+		ret = fan_wmi_performance_set(fallback);
 	if (ret)
 		return ret;
 
@@ -481,14 +541,60 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 	return 0;
 }
 
+static bool fan_ec_byte_known(u8 b)
+{
+	switch (b) {
+	case OMEN_V1_PERFORMANCE:
+	case OMEN_V0_PERFORMANCE:
+	case OMEN_V1_DEFAULT:
+	case OMEN_V0_DEFAULT:
+	case OMEN_V1_COOL:
+	case OMEN_V0_COOL:
+	case VICTUS_QUIET:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
+ * ec_read() succeeds for any offset; the thermal-profile register depends on
+ * the board (0x59 Victus-S / modern Omen, 0x95 legacy Omen). Prefer the
+ * Victus-S offset when that fan interface is active, and only accept a byte
+ * that matches a known profile — otherwise a random EC value (often 0x50)
+ * was reported as "silent" while PPD showed performance.
+ */
 static int fan_ec_profile_byte(u8 *out)
 {
-	int ret;
+	u8 a = 0, b = 0;
+	int ret_a, ret_b;
+	const u8 first = (fan_iface == OMEN_FAN_IF_VICTUS_S) ?
+			 HP_VICTUS_S_EC_THERMAL_PROFILE_OFFSET :
+			 HP_OMEN_EC_THERMAL_PROFILE_OFFSET;
+	const u8 second = (first == HP_VICTUS_S_EC_THERMAL_PROFILE_OFFSET) ?
+			  HP_OMEN_EC_THERMAL_PROFILE_OFFSET :
+			  HP_VICTUS_S_EC_THERMAL_PROFILE_OFFSET;
 
-	ret = ec_read(HP_OMEN_EC_THERMAL_PROFILE_OFFSET, out);
-	if (!ret)
+	ret_a = ec_read(first, &a);
+	ret_b = ec_read(second, &b);
+
+	if (!ret_a && fan_ec_byte_known(a)) {
+		*out = a;
 		return 0;
-	return ec_read(HP_VICTUS_S_EC_THERMAL_PROFILE_OFFSET, out);
+	}
+	if (!ret_b && fan_ec_byte_known(b)) {
+		*out = b;
+		return 0;
+	}
+	if (!ret_a) {
+		*out = a;
+		return 0;
+	}
+	if (!ret_b) {
+		*out = b;
+		return 0;
+	}
+	return ret_a ? ret_a : ret_b;
 }
 
 static const char *fan_ec_byte_to_name(u8 b)
@@ -502,6 +608,7 @@ static const char *fan_ec_byte_to_name(u8 b)
 		return "normal";
 	case OMEN_V1_COOL:
 	case OMEN_V0_COOL:
+	case VICTUS_QUIET:
 		return "silent";
 	default:
 		return "unknown";
@@ -867,16 +974,19 @@ static ssize_t max_fan_store(struct device *dev,
 static ssize_t thermal_profile_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
-	u8 ec = 0;
-	int ret;
+	char name[THERMAL_NAME_SZ];
 
+	/*
+	 * Return the last applied preset (sysfs or PPD), not a raw EC byte.
+	 * Mainline hp-wmi does the same for platform_profile get so battery
+	 * snap-back / shared low_power+balanced EC values cannot disagree
+	 * with what PPD and thermal_profile_store just set.
+	 */
 	mutex_lock(&fan_lock);
-	ret = fan_ec_profile_byte(&ec);
+	strscpy(name, thermal_profile_name, sizeof(name));
 	mutex_unlock(&fan_lock);
 
-	if (ret)
-		return sysfs_emit(buf, "unknown (ec_read error %d)\n", ret);
-	return sysfs_emit(buf, "%s\n", fan_ec_byte_to_name(ec));
+	return sysfs_emit(buf, "%s\n", name);
 }
 
 static ssize_t thermal_profile_store(struct device *dev,
@@ -1203,6 +1313,8 @@ static void omen_platform_profile_init_from_ec(void)
 {
 	u8 ec = 0;
 	const char *name;
+	bool ctgp = false, ppab = false;
+	u8 dstate = 0, slowdown = 0;
 
 	if (fan_ec_profile_byte(&ec))
 		return;
@@ -1210,6 +1322,15 @@ static void omen_platform_profile_init_from_ec(void)
 	name = fan_ec_byte_to_name(ec);
 	if (sysfs_streq(name, "unknown"))
 		return;
+
+	/*
+	 * Default EC byte is shared by balanced and low_power on Victus-S /
+	 * modern Omen. Match mainline: CTGP/PPAB both off → silent.
+	 */
+	if (sysfs_streq(name, "normal") &&
+	    !omen_gpu_thermal_get(&ctgp, &ppab, &dstate, &slowdown) &&
+	    !ctgp && !ppab)
+		name = "silent";
 
 	active_platform_profile = omen_name_to_pp(name);
 	if (active_platform_profile == PLATFORM_PROFILE_LAST)
