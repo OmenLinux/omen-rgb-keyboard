@@ -37,5 +37,10 @@ void save_animation_state(void);
  */
 void load_animation_state(void);
 
+/**
+ * flush_animation_state - Wait for a pending async save to finish
+ */
+void flush_animation_state(void);
+
 #endif /* OMEN_STATE_H */
 

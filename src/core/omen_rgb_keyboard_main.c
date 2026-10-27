@@ -149,7 +149,8 @@ static void __exit hp_wmi_exit(void)
 	
 	/* Stop animations and cleanup */
 	animation_cleanup();
-	
+	flush_animation_state();
+
 	omen_fan_cleanup();
 
 	/* Cleanup zones */

@@ -46,10 +46,18 @@ cp omen_rgb_keyboard.conf /etc/modprobe.d/
 echo "Creating systemd module loading configuration..."
 echo "omen_rgb_keyboard" > /etc/modules-load.d/omen_rgb_keyboard.conf
 
-# Create the state directory
+# Create the state directory (group input can update state files from sysfs)
 echo "Creating state directory..."
 mkdir -p /var/lib/omen-rgb-keyboard
-chmod 755 /var/lib/omen-rgb-keyboard
+if getent group input >/dev/null 2>&1; then
+    chgrp input /var/lib/omen-rgb-keyboard || true
+    chmod 2775 /var/lib/omen-rgb-keyboard
+    touch /var/lib/omen-rgb-keyboard/state /var/lib/omen-rgb-keyboard/fan_state
+    chgrp input /var/lib/omen-rgb-keyboard/state /var/lib/omen-rgb-keyboard/fan_state || true
+    chmod 664 /var/lib/omen-rgb-keyboard/state /var/lib/omen-rgb-keyboard/fan_state
+else
+    chmod 755 /var/lib/omen-rgb-keyboard
+fi
 
 # Load the module immediately
 echo "Loading module..."

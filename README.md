@@ -43,7 +43,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - **12 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
 - **Mute Button LED Control** - Automatic LED sync with system mute state via HDA codec
-- **Fan control** - RPM readout, max fan, thermal presets (silent / normal / performance) with built-in curves, optional custom curves, CPU PL1/PL2 power limits, and Power Profiles Daemon (PPD) integration via `platform_profile` (see below)
+- **Fan control** - EC-automatic by default, optional custom curve override (persisted across reboot), max fan, hysteresis, auto max under Performance, thermal presets (silent / normal / performance), CPU PL1/PL2, and PPD via `platform_profile` (see below)
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
 
@@ -112,11 +112,12 @@ sudo cp omen_rgb_keyboard.conf /etc/modprobe.d/
 # Create systemd module loading configuration
 echo "omen_rgb_keyboard" | sudo tee /etc/modules-load.d/omen_rgb_keyboard.conf
 
-# Create state directory
+# Create state directory (RGB + fan persistence)
 sudo mkdir -p /var/lib/omen-rgb-keyboard
 ```
 
-Alternatively, use the provided installation script:
+`install.sh` also makes that directory group-`input` writable and creates the `state` / `fan_state` files. Prefer the script when possible:
+
 ```bash
 sudo ./install.sh
 ```
@@ -253,19 +254,23 @@ cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone01
 
 ### Fan control (`/sys/devices/platform/omen-rgb-keyboard/fan/`)
 
-Requires the same HP WMI GUID as RGB; **blacklist `hp_wmi`** if both would load (see above). Fan curves need a WMI path, a valid BIOS fan table, and **`CONFIG_THERMAL`** in your kernel so a thermal zone can be read.
+Requires the same HP WMI GUID as RGB; **blacklist `hp_wmi`** if both would load (see above). Custom fan curves need Victus-S WMI, a valid BIOS fan table, and **`CONFIG_THERMAL`** so a thermal zone can be read. **`max_fan` works on all supported fan interfaces.**
+
+By default the **EC owns the fans** (automatic). `fan_curve` shows a reference table for the active thermal preset; writing your own setpoints **overrides** the EC. Mode and custom points are saved under `/var/lib/omen-rgb-keyboard/fan_state` and restored after reboot.
 
 | File | Purpose |
 |------|---------|
 | `cpu_fan_rpm`, `gpu_fan_rpm` | Read-only RPM (where supported) |
-| `max_fan` | `0` / `1` — automatic vs max fans |
-| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset); read maps EC where possible. Also applies GPU CTGP/PPAB and re-actualizes PL1/PL2 defaults (mainline hp-wmi Victus-S behaviour) |
+| `max_fan` | `0` / `1` — max fans off/on (always available). Manual `1` is sticky until you write `0` |
+| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset). Also applies GPU CTGP/PPAB and re-actualizes PL1/PL2 defaults. Does **not** start a software curve or wipe saved customs |
 | `power_limits` | CPU PL1/PL2 in watts (`PL1 PL2`), or `default` / `0 0` to restore BIOS defaults. PL2 must be ≥ PL1. Read shows last written values (firmware has no get) |
-| `fan_curve` | Read/write the active curve (see **Fan curve format** below) |
-| `fan_curve_enable` | `0` stops the curve worker; `1` starts it (uses current `fan_curve` points) |
+| `fan_curve` | Read the active/reference points; write `temp:pct` pairs to save a custom curve and override the EC; write `default` or `ec` to return control to the EC (customs kept) |
+| `fan_curve_enable` | `0` returns to EC automatic (keeps saved customs); `1` re-applies the saved custom curve |
 | `fan_temp_zone` | Optional thermal zone name (e.g. `x86_pkg_temp`); if unset, the driver tries common zone names |
 
-After a successful `thermal_profile` write, built-in preset curves are copied into `fan_curve` and the worker starts automatically unless you previously set `fan_curve_enable` to `0` (manual off). Enabling **max fan** disables the curve path. Custom points overwrite `fan_curve`; switching `thermal_profile` again replaces them with that preset’s built-in steps.
+**Hysteresis:** while a custom curve is applied, fan percent uses a 3°C band so speeds do not chatter around a setpoint. WMI speed is only rewritten when the mapped speed byte changes.
+
+**Auto max (Performance):** when `thermal_profile` / PPD is `performance` and curve demand reaches ≥ **90%**, the driver engages max fan automatically; it releases again at ≤ **80%** (or when leaving Performance). A manual `max_fan=1` is never cleared by this path.
 
 While `thermal_profile` is `performance`, AC plug/unplug re-sends PL1/PL2 defaults so the EC picks the correct wattage for the new power source (same fix as mainline `hp-wmi`).
 
@@ -310,15 +315,21 @@ Curves are **space-separated** pairs:
 
 You need **at least 2** points and may use **up to 8** points per curve. Order does not matter; the driver sorts by temperature. Between two adjacent points the driver **linearly interpolates** fan percent vs temperature; below the lowest point it clamps to that point’s percent, and above the highest it clamps to the last point’s percent.
 
-Example (seven steps):
-
 ```bash
 F=/sys/devices/platform/omen-rgb-keyboard/fan
+
+# Override EC with a custom curve (also saved across reboot)
 echo "30:20 40:28 50:38 60:50 72:65 82:78 92:90" | tee "$F/fan_curve"
+
+# Hand fans back to the EC — custom points stay in fan_curve
+echo 0 | tee "$F/fan_curve_enable"
+# or: echo default | tee "$F/fan_curve"
+
+# Re-apply the saved custom curve later
 echo 1 | tee "$F/fan_curve_enable"
 ```
 
-Built-in silent / normal / performance presets use five points each; your custom curve can use any count from 2 to 8.
+Until you write custom points, `fan_curve` shows the built-in silent / normal / performance reference for the active `thermal_profile` (five points each). Switching profile updates that reference only when you have **not** saved a custom curve; saved customs are never discarded by profile/PPD changes or restore-to-EC.
 
 ### Color Format
 
@@ -549,7 +560,7 @@ For instructions and automated scripts to handle MOK generation and DKMS signing
 - WMI Interface: Uses HP's native WMI commands for maximum compatibility
 - Buffer Layout: Matches HP's Windows implementation exactly
 - Animation System: CPU-efficient timer-based updates with 20 FPS
-- State Persistence: Saves settings to `/var/lib/omen-rgb-keyboard/state`
+- State Persistence: RGB/animation → `/var/lib/omen-rgb-keyboard/state`; fan mode/curves → `/var/lib/omen-rgb-keyboard/fan_state`
 - Kernel Compatibility: Linux 5.0+
 
 ## License

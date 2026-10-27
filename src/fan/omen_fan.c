@@ -2,13 +2,12 @@
 /*
  * HP OMEN RGB Keyboard Driver - Fan control via HP WMI
  *
- * RPM read, max fan, OMEN thermal profiles (WMI: silent / normal /
- * performance) each with a built-in fan curve when Victus WMI + fan table +
- * CONFIG_THERMAL are available; optional custom curve via fan_curve sysfs.
- * CPU PL1/PL2 and GPU CTGP/PPAB follow mainline hp-wmi (Victus-S path):
- * silent and normal share the thermal WMI byte; CTGP/PPAB distinguish them.
- * Registers with the ACPI platform_profile class so power-profiles-daemon
- * (PPD) can drive the same silent/normal/performance modes.
+ * Default: EC automatic fans. Built-in silent/normal/performance reference
+ * curves are shown in fan_curve; writing setpoints overrides the EC until the
+ * user restores automatic. Custom points persist across reboot. Hysteresis
+ * avoids fan chatter; under Performance, demand >= 90% can auto-engage max
+ * fan (release at <= 80%). max_fan is always available. PPD drives the same
+ * silent/normal/performance thermal modes via platform_profile.
  *
  * Author: alessandromrc
  */
@@ -17,6 +16,7 @@
 
 #include <linux/acpi.h>
 #include <linux/device.h>
+#include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/mutex.h>
@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
+#include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
 #if IS_ENABLED(CONFIG_THERMAL)
@@ -52,12 +53,18 @@ enum omen_fan_iface {
 #define HP_OMEN_EC_THERMAL_PROFILE_OFFSET	0x95
 #define HP_VICTUS_S_EC_THERMAL_PROFILE_OFFSET	0x59
 
-/* Local until kernels that put this in acpi_bus.h (mainline hp-wmi did the same). */
 #ifndef ACPI_AC_CLASS
 #define ACPI_AC_CLASS "ac_adapter"
 #endif
 
 #define MAX_CURVE_POINTS	8
+#define FAN_CURVE_HYST_C	3
+#define FAN_AUTO_MAX_ON_PCT	90
+#define FAN_AUTO_MAX_OFF_PCT	80
+
+#define FAN_STATE_PATH		"/var/lib/omen-rgb-keyboard/fan_state"
+#define FAN_STATE_MAGIC		0x4e41464f /* 'OFAN' little-endian */
+#define FAN_STATE_VERSION	1
 
 /* OMEN / Victus EC / WMI profile bytes (mainline hp-wmi) */
 #define OMEN_V0_DEFAULT		0x00
@@ -84,12 +91,28 @@ struct victus_s_fan_table {
 	struct victus_s_fan_table_entry entries[];
 } __packed;
 
+struct omen_fan_persist {
+	u32 magic;
+	u32 version;
+	u8 curve_user_saved;
+	u8 curve_enabled;
+	u8 max_fan_manual;
+	u8 num_points;
+	s32 temps[MAX_CURVE_POINTS];
+	s32 pcts[MAX_CURVE_POINTS];
+	char thermal_profile[16];
+} __packed;
+
 static enum omen_fan_iface fan_iface = OMEN_FAN_IF_NONE;
 static struct platform_device *fan_pdev;
 static DEFINE_MUTEX(fan_lock);
+/* Serializes snapshot+write so a stale save cannot clobber a newer one. */
+static DEFINE_MUTEX(fan_persist_mutex);
 
 static int max_fan_state;
 static bool max_fan_known;
+static bool max_fan_manual;
+static bool max_fan_auto;
 static bool fan_max_keepalive_armed;
 static struct delayed_work fan_max_keepalive;
 
@@ -101,6 +124,10 @@ static int curve_temps_c[MAX_CURVE_POINTS];
 static int curve_pct[MAX_CURVE_POINTS];
 static int curve_num_points;
 static bool curve_enabled;
+static bool curve_user_saved;
+static int curve_last_pct = -1;
+static u8 curve_last_spd;
+static bool curve_last_spd_valid;
 static struct delayed_work fan_curve_work;
 #if IS_ENABLED(CONFIG_THERMAL)
 static struct thermal_zone_device *curve_tz;
@@ -108,13 +135,9 @@ static struct thermal_zone_device *curve_tz;
 #define FAN_TZ_NAME_SZ	64
 static char curve_tz_name[FAN_TZ_NAME_SZ];
 
-static bool fan_curve_manual_off;
-
-/* Last thermal profile name applied (sysfs or PPD/platform_profile). */
 #define THERMAL_NAME_SZ 16
 static char thermal_profile_name[THERMAL_NAME_SZ] = "normal";
 
-/* Last PL1/PL2 written via power_limits sysfs (0 = BIOS default). */
 static u8 power_pl1 = HP_POWER_LIMIT_DEFAULT;
 static u8 power_pl2 = HP_POWER_LIMIT_DEFAULT;
 static bool power_limits_known;
@@ -123,16 +146,21 @@ static bool gpu_modes_supported = true;
 
 static struct notifier_block power_source_nb;
 static bool power_source_nb_registered;
+static bool fan_persist_ready;
+static struct omen_fan_persist fan_persist_pending;
+static bool fan_persist_pending_valid;
+static struct work_struct fan_persist_work;
 
 static void fan_preset_curve_install(const char *name);
 static int fan_victus_wmi_speed_set(u8 cpu_spd);
 static int fan_temp_zone_bind_default(void);
+static void fan_curve_restore_ec(bool persist);
+static void fan_persist_save(void);
+static void fan_max_apply(bool enable, bool manual);
+static void fan_curve_schedule_locked(void);
+static bool fan_in_performance(void);
 
 #if IS_REACHABLE(CONFIG_ACPI_PLATFORM_PROFILE)
-/*
- * Stored profile (mainline hp-wmi behaviour): return this on get rather than
- * the EC byte, so PPD does not see performance "snap back" on battery.
- */
 static enum platform_profile_option active_platform_profile =
 	PLATFORM_PROFILE_BALANCED;
 static struct device *platform_profile_dev;
@@ -151,10 +179,6 @@ static int fan_victus_userdefine_trigger(void)
 	return fc[0];
 }
 
-/*
- * Backport of victus_s_set_cpu_pl1_pl2() from drivers/platform/x86/hp/hp-wmi.c.
- * HP_POWER_LIMIT_DEFAULT restores BIOS defaults for the active thermal mode.
- */
 static int omen_set_cpu_pl1_pl2(u8 pl1, u8 pl2)
 {
 	struct omen_power_limits power_limits;
@@ -236,10 +260,6 @@ static int omen_gpu_thermal_set(bool ctgp_enable, bool ppab_enable, u8 dstate)
 	return 0;
 }
 
-/*
- * GPU CTGP/PPAB pairing from mainline platform_profile_victus_s_set_ec().
- * Silent ~ low_power, normal ~ balanced, performance ~ performance.
- */
 static int omen_gpu_modes_for_profile(const char *name)
 {
 	bool ctgp, ppab;
@@ -369,7 +389,6 @@ static int fan_wmi_performance_set(u8 mode_byte)
 }
 
 #if IS_REACHABLE(CONFIG_ACPI_PLATFORM_PROFILE)
-/* PPD: power-saver→silent, balanced→normal, performance→performance */
 static const char *omen_pp_to_name(enum platform_profile_option profile)
 {
 	switch (profile) {
@@ -396,61 +415,97 @@ static enum platform_profile_option omen_name_to_pp(const char *name)
 }
 #endif
 
-/*
- * After a thermal preset change: install the built-in curve and start the
- * worker unless the user previously forced fan_curve_enable=0. If the curve
- * path cannot run, force WMI automatic so a prior manual speed cannot stick
- * (that looked like "fans locked on silent" under PPD performance).
- */
-static void fan_curve_after_profile(const char *name)
+static bool fan_in_performance(void)
 {
-	int can_curve = 0;
-	int release_manual = 0;
-
-	mutex_lock(&fan_lock);
-	fan_preset_curve_install(name);
-
-	can_curve = !fan_curve_manual_off && !max_fan_state &&
-		    fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid &&
-		    curve_num_points >= 2;
-
-	if (can_curve) {
-#if IS_ENABLED(CONFIG_THERMAL)
-		if (fan_temp_zone_bind_default()) {
-			pr_debug("thermal zone unavailable; using EC automatic fans\n");
-			can_curve = 0;
-		}
-#else
-		can_curve = 0;
+#if IS_REACHABLE(CONFIG_ACPI_PLATFORM_PROFILE)
+	if (active_platform_profile == PLATFORM_PROFILE_PERFORMANCE)
+		return true;
 #endif
-	}
+	return sysfs_streq(thermal_profile_name, "performance");
+}
 
-	if (can_curve) {
-		curve_enabled = true;
+static bool fan_curve_can_override(void)
+{
+	return fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid &&
+	       curve_num_points >= 2;
+}
+
+static bool fan_worker_needed_locked(void)
+{
+	if (max_fan_manual)
+		return false;
+	if (curve_enabled && fan_curve_can_override())
+		return true;
+	if (fan_in_performance())
+		return true;
+	if (max_fan_auto)
+		return true;
+	return false;
+}
+
+static void fan_curve_schedule_locked(void)
+{
+	if (fan_worker_needed_locked())
 		schedule_delayed_work(&fan_curve_work, 1);
-		mutex_unlock(&fan_lock);
-		return;
-	}
-
-	if (curve_enabled || fan_iface == OMEN_FAN_IF_VICTUS_S)
-		release_manual = !max_fan_state;
-	curve_enabled = false;
-	mutex_unlock(&fan_lock);
-
-	if (!release_manual)
-		return;
-
-	cancel_delayed_work_sync(&fan_curve_work);
-	mutex_lock(&fan_lock);
-	if (!max_fan_state && fan_iface == OMEN_FAN_IF_VICTUS_S)
-		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
-	mutex_unlock(&fan_lock);
 }
 
 /*
- * Apply WMI thermal mode + GPU CTGP/PPAB + PL defaults.
- * from_pp: true when called from platform_profile_set (do not notify PPD).
+ * After a thermal preset change: refresh the reference table only when the
+ * user has no saved custom points. Never auto-start an override — EC stays
+ * in control unless curve_enabled is already set.
  */
+static void fan_curve_after_profile(const char *name)
+{
+	bool keep_override;
+	bool release_to_ec;
+
+	mutex_lock(&fan_lock);
+	if (!curve_user_saved)
+		fan_preset_curve_install(name);
+
+	keep_override = curve_enabled && !max_fan_manual &&
+			fan_curve_can_override();
+#if IS_ENABLED(CONFIG_THERMAL)
+	if (keep_override && fan_temp_zone_bind_default()) {
+		pr_debug("thermal zone unavailable; keeping EC automatic\n");
+		keep_override = false;
+		curve_enabled = false;
+	}
+#else
+	if (keep_override) {
+		keep_override = false;
+		curve_enabled = false;
+	}
+#endif
+
+	release_to_ec = !keep_override && !max_fan_state &&
+			fan_iface == OMEN_FAN_IF_VICTUS_S;
+
+	if (!max_fan_manual && !fan_in_performance() && !max_fan_auto)
+		curve_last_pct = -1;
+
+	if (keep_override) {
+		curve_last_pct = -1;
+		curve_last_spd_valid = false;
+	}
+	mutex_unlock(&fan_lock);
+
+	if (release_to_ec) {
+		cancel_delayed_work_sync(&fan_curve_work);
+		mutex_lock(&fan_lock);
+		if (!max_fan_state && fan_iface == OMEN_FAN_IF_VICTUS_S)
+			fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
+		fan_curve_schedule_locked();
+		mutex_unlock(&fan_lock);
+	} else {
+		mutex_lock(&fan_lock);
+		fan_curve_schedule_locked();
+		mutex_unlock(&fan_lock);
+	}
+
+	fan_persist_save();
+}
+
 static int fan_thermal_profile_apply(const char *name, bool from_pp)
 {
 	u8 primary, fallback;
@@ -459,15 +514,6 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 	enum platform_profile_option pp;
 #endif
 
-	/*
-	 * Mainline Victus-S: low_power and balanced share the same thermal
-	 * WMI byte; CTGP/PPAB distinguish them. COOL (0x50/0x02) is a separate
-	 * "cool" mode (more aggressive fans), not silent — never map silent
-	 * there or PPD power-saver fights performance and EC reads look stuck.
-	 *
-	 * Prefer Victus-S bytes (0x00/0x01) when that fan interface is active,
-	 * else Omen v1 (0x30/0x31), with the other as fallback.
-	 */
 	if (sysfs_streq(name, "performance")) {
 		if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
 			primary = OMEN_V0_PERFORMANCE;
@@ -488,7 +534,6 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 		return -EINVAL;
 	}
 
-	/* Same user-define kick mainline uses before profile changes. */
 	fan_victus_userdefine_trigger();
 
 	ret = fan_wmi_performance_set(primary);
@@ -497,10 +542,6 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 	if (ret)
 		return ret;
 
-	/*
-	 * Victus-S / modern Omen: GPU CTGP/PPAB + PL1/PL2 actualization.
-	 * Failures are non-fatal on boards that lack those WMI commands.
-	 */
 	ret = omen_gpu_modes_for_profile(name);
 	if (ret && ret != -ENODEV)
 		pr_debug("GPU thermal modes for %s: %d\n", name, ret);
@@ -529,10 +570,6 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 	if (pp != PLATFORM_PROFILE_LAST)
 		active_platform_profile = pp;
 
-	/*
-	 * Sysfs thermal_profile writes must wake PPD; calls that already came
-	 * from platform_profile_set must not re-enter profile_lock via notify.
-	 */
 	if (!from_pp && platform_profile_registered && platform_profile_dev)
 		platform_profile_notify(platform_profile_dev);
 #endif
@@ -557,13 +594,6 @@ static bool fan_ec_byte_known(u8 b)
 	}
 }
 
-/*
- * ec_read() succeeds for any offset; the thermal-profile register depends on
- * the board (0x59 Victus-S / modern Omen, 0x95 legacy Omen). Prefer the
- * Victus-S offset when that fan interface is active, and only accept a byte
- * that matches a known profile — otherwise a random EC value (often 0x50)
- * was reported as "silent" while PPD showed performance.
- */
 static int fan_ec_profile_byte(u8 *out)
 {
 	u8 a = 0, b = 0;
@@ -662,15 +692,27 @@ static int fan_victus_wmi_speed_set(u8 cpu_spd)
 	return ret ? -EIO : 0;
 }
 
-/* Do not call while holding fan_lock (work may be waiting on that lock). */
-static void fan_curve_disable_sync(void)
+/*
+ * Return control to the EC without discarding saved custom setpoints.
+ * Do not call while holding fan_lock (cancels work that may take the lock).
+ */
+static void fan_curve_restore_ec(bool persist)
 {
 	curve_enabled = false;
+	curve_last_pct = -1;
+	curve_last_spd_valid = false;
 	cancel_delayed_work_sync(&fan_curve_work);
 
 	mutex_lock(&fan_lock);
-	fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
+	if (!max_fan_state && fan_iface == OMEN_FAN_IF_VICTUS_S)
+		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
+	if (!curve_user_saved)
+		fan_preset_curve_install(thermal_profile_name);
+	fan_curve_schedule_locked();
 	mutex_unlock(&fan_lock);
+
+	if (persist)
+		fan_persist_save();
 }
 
 static int fan_temp_zone_bind_default(void)
@@ -747,6 +789,37 @@ static int curve_percent_for_temp_c(int temp_c)
 	return curve_pct[curve_num_points - 1];
 }
 
+/*
+ * Schmitt-style band: ramp up follows the curve immediately; ramp down only
+ * when the curve at (temp + HYST) is also below the held percent.
+ */
+static int curve_percent_with_hysteresis(int temp_c)
+{
+	int pct_now, pct_cool;
+
+	pct_now = curve_percent_for_temp_c(temp_c);
+	if (pct_now < 0)
+		return pct_now;
+
+	if (curve_last_pct < 0) {
+		curve_last_pct = pct_now;
+		return pct_now;
+	}
+
+	if (pct_now > curve_last_pct) {
+		curve_last_pct = pct_now;
+		return curve_last_pct;
+	}
+
+	pct_cool = curve_percent_for_temp_c(temp_c + FAN_CURVE_HYST_C);
+	if (pct_cool < 0)
+		pct_cool = pct_now;
+	if (pct_cool < curve_last_pct)
+		curve_last_pct = pct_cool;
+
+	return curve_last_pct;
+}
+
 static void fan_curve_sort_points(void)
 {
 	int i, j, tmp;
@@ -765,10 +838,6 @@ static void fan_curve_sort_points(void)
 	}
 }
 
-/*
- * Default temp:% fan curves per preset (piecewise-linear vs thermal zone).
- * Silent stays low until high load; normal is balanced; performance ramps early.
- */
 static void fan_preset_curve_install(const char *name)
 {
 	static const int silent_t[] = { 35, 50, 65, 80, 95 };
@@ -806,22 +875,145 @@ static void fan_preset_curve_install(const char *name)
 	fan_curve_sort_points();
 }
 
+static void fan_max_keepalive_arm_locked(void)
+{
+	fan_max_keepalive_armed = true;
+	schedule_delayed_work(&fan_max_keepalive, FAN_KEEPALIVE_JIFFIES);
+}
+
+static void fan_max_keepalive_disarm(void)
+{
+	fan_max_keepalive_armed = false;
+	cancel_delayed_work_sync(&fan_max_keepalive);
+}
+
+/*
+ * Engage or clear max fan. manual=true is a sticky user latch; manual=false
+ * is the Performance auto path (must not clear a manual latch).
+ * Caller must not hold fan_lock across the keepalive cancel.
+ */
+static void fan_max_apply(bool enable, bool manual)
+{
+	int enabled;
+	int ret;
+
+	if (enable) {
+		if (manual) {
+			max_fan_manual = true;
+			max_fan_auto = false;
+		} else {
+			if (max_fan_manual)
+				return;
+			max_fan_auto = true;
+		}
+
+		mutex_lock(&fan_lock);
+		if (fan_iface == OMEN_FAN_IF_VICTUS_S)
+			fan_victus_userdefine_trigger();
+		enabled = 1;
+		ret = hp_wmi_perform_query(HPWMI_GM_FAN_SPEED_MAX_SET,
+					   HPWMI_GAMING, &enabled,
+					   sizeof(enabled), 0);
+		if (!ret) {
+			max_fan_state = 1;
+			max_fan_known = true;
+			curve_last_spd_valid = false;
+			fan_max_keepalive_arm_locked();
+		} else if (manual) {
+			max_fan_manual = false;
+		} else {
+			max_fan_auto = false;
+		}
+		mutex_unlock(&fan_lock);
+		return;
+	}
+
+	/* disable */
+	if (manual) {
+		max_fan_manual = false;
+		max_fan_auto = false;
+	} else {
+		if (max_fan_manual)
+			return;
+		max_fan_auto = false;
+	}
+
+	fan_max_keepalive_disarm();
+
+	mutex_lock(&fan_lock);
+	enabled = 0;
+	ret = hp_wmi_perform_query(HPWMI_GM_FAN_SPEED_MAX_SET, HPWMI_GAMING,
+				   &enabled, sizeof(enabled), 0);
+	if (!ret) {
+		max_fan_state = 0;
+		max_fan_known = true;
+	}
+
+	if (curve_enabled && fan_curve_can_override()) {
+#if IS_ENABLED(CONFIG_THERMAL)
+		if (!fan_temp_zone_bind_default()) {
+			curve_last_pct = -1;
+			fan_curve_schedule_locked();
+		}
+#endif
+	} else if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
+		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
+		fan_curve_schedule_locked();
+	}
+	mutex_unlock(&fan_lock);
+}
+
+static void fan_auto_max_update_locked(int demand_pct)
+{
+	bool want_on = false;
+
+	if (max_fan_manual)
+		return;
+
+	if (fan_in_performance() && demand_pct >= FAN_AUTO_MAX_ON_PCT)
+		want_on = true;
+	else if (max_fan_auto &&
+		 (!fan_in_performance() || demand_pct <= FAN_AUTO_MAX_OFF_PCT))
+		want_on = false;
+	else if (max_fan_auto)
+		want_on = true;
+	else
+		return;
+
+	if (want_on && !max_fan_auto) {
+		mutex_unlock(&fan_lock);
+		fan_max_apply(true, false);
+		mutex_lock(&fan_lock);
+	} else if (!want_on && max_fan_auto) {
+		mutex_unlock(&fan_lock);
+		fan_max_apply(false, false);
+		mutex_lock(&fan_lock);
+	}
+}
+
 static void fan_curve_work_fn(struct work_struct *work)
 {
 	long temp_mc = 0;
 	int temp_c, pct, ret, run_again;
 	u8 spd;
+	bool apply_override;
 
 	mutex_lock(&fan_lock);
-	if (!curve_enabled) {
+
+	if (max_fan_manual) {
 		mutex_unlock(&fan_lock);
 		return;
 	}
-	if (max_fan_state) {
-		curve_enabled = false;
+
+	if (!fan_worker_needed_locked()) {
 		mutex_unlock(&fan_lock);
 		return;
 	}
+
+#if IS_ENABLED(CONFIG_THERMAL)
+	if (!curve_tz)
+		fan_temp_zone_bind_default();
+#endif
 
 	ret = fan_temp_mc(&temp_mc);
 	if (ret)
@@ -829,19 +1021,31 @@ static void fan_curve_work_fn(struct work_struct *work)
 	else
 		temp_c = (int)(temp_mc / 1000);
 
-	pct = curve_percent_for_temp_c(temp_c);
+	pct = curve_percent_with_hysteresis(temp_c);
 	if (pct < 0)
 		pct = 50;
-	spd = fan_percent_to_cpu_speed((unsigned int)pct);
-	ret = fan_victus_wmi_speed_set(spd);
-	if (ret)
-		pr_debug("fan curve apply failed: %d\n", ret);
 
+	fan_auto_max_update_locked(pct);
+
+	apply_override = curve_enabled && fan_curve_can_override() &&
+			 !max_fan_state;
+
+	if (apply_override) {
+		spd = fan_percent_to_cpu_speed((unsigned int)pct);
+		if (!curve_last_spd_valid || spd != curve_last_spd) {
+			ret = fan_victus_wmi_speed_set(spd);
+			if (ret)
+				pr_debug("fan curve apply failed: %d\n", ret);
+			else {
+				curve_last_spd = spd;
+				curve_last_spd_valid = true;
+			}
+		}
+	}
+
+	run_again = fan_worker_needed_locked() ? 1 : 0;
 	mutex_unlock(&fan_lock);
 
-	mutex_lock(&fan_lock);
-	run_again = curve_enabled ? 1 : 0;
-	mutex_unlock(&fan_lock);
 	if (run_again)
 		schedule_delayed_work(&fan_curve_work, FAN_CURVE_POLL_JIFFIES);
 }
@@ -861,6 +1065,137 @@ static void fan_max_keepalive_fn(struct work_struct *work)
 
 	if (fan_max_keepalive_armed && max_fan_state)
 		schedule_delayed_work(&fan_max_keepalive, FAN_KEEPALIVE_JIFFIES);
+}
+
+/*
+ * Snapshot under locks, write from a kworker. Sysfs store paths run as the
+ * calling user and cannot write root-owned /var/lib files (EACCES); kworkers
+ * use kernel credentials and succeed.
+ */
+static void fan_persist_work_fn(struct work_struct *work)
+{
+	struct omen_fan_persist st;
+	struct file *fp;
+	loff_t pos = 0;
+
+	mutex_lock(&fan_persist_mutex);
+	if (!fan_persist_pending_valid) {
+		mutex_unlock(&fan_persist_mutex);
+		return;
+	}
+	st = fan_persist_pending;
+	fan_persist_pending_valid = false;
+	mutex_unlock(&fan_persist_mutex);
+
+	fp = filp_open(FAN_STATE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (IS_ERR(fp)) {
+		pr_warn("fan state save failed: %ld\n", PTR_ERR(fp));
+		return;
+	}
+	kernel_write(fp, &st, sizeof(st), &pos);
+	filp_close(fp, NULL);
+}
+
+static void fan_persist_save(void)
+{
+	int i;
+
+	if (!fan_persist_ready)
+		return;
+
+	mutex_lock(&fan_persist_mutex);
+	mutex_lock(&fan_lock);
+	fan_persist_pending.magic = FAN_STATE_MAGIC;
+	fan_persist_pending.version = FAN_STATE_VERSION;
+	fan_persist_pending.curve_user_saved = curve_user_saved ? 1 : 0;
+	fan_persist_pending.curve_enabled = curve_enabled ? 1 : 0;
+	fan_persist_pending.max_fan_manual = max_fan_manual ? 1 : 0;
+	fan_persist_pending.num_points =
+		(u8)clamp_t(int, curve_num_points, 0, MAX_CURVE_POINTS);
+	memset(fan_persist_pending.temps, 0, sizeof(fan_persist_pending.temps));
+	memset(fan_persist_pending.pcts, 0, sizeof(fan_persist_pending.pcts));
+	for (i = 0; i < fan_persist_pending.num_points; i++) {
+		fan_persist_pending.temps[i] = curve_temps_c[i];
+		fan_persist_pending.pcts[i] = curve_pct[i];
+	}
+	strscpy(fan_persist_pending.thermal_profile, thermal_profile_name,
+		sizeof(fan_persist_pending.thermal_profile));
+	mutex_unlock(&fan_lock);
+	fan_persist_pending_valid = true;
+	mutex_unlock(&fan_persist_mutex);
+
+	schedule_work(&fan_persist_work);
+}
+
+static int fan_persist_load(struct omen_fan_persist *out)
+{
+	struct file *fp;
+	loff_t pos = 0;
+	ssize_t ret;
+
+	fp = filp_open(FAN_STATE_PATH, O_RDONLY, 0);
+	if (IS_ERR(fp))
+		return -ENOENT;
+
+	ret = kernel_read(fp, out, sizeof(*out), &pos);
+	filp_close(fp, NULL);
+	if (ret != sizeof(*out))
+		return -EINVAL;
+	if (out->magic != FAN_STATE_MAGIC || out->version != FAN_STATE_VERSION)
+		return -EINVAL;
+	if (out->num_points > MAX_CURVE_POINTS)
+		return -EINVAL;
+	return 0;
+}
+
+static void fan_persist_apply(const struct omen_fan_persist *st)
+{
+	int i;
+	bool want_override;
+	bool want_max;
+
+	mutex_lock(&fan_lock);
+	if (st->curve_user_saved && st->num_points >= 2) {
+		curve_user_saved = true;
+		curve_num_points = st->num_points;
+		for (i = 0; i < curve_num_points; i++) {
+			curve_temps_c[i] = st->temps[i];
+			curve_pct[i] = st->pcts[i];
+		}
+		fan_curve_sort_points();
+		want_override = st->curve_enabled ? true : false;
+	} else {
+		curve_user_saved = false;
+		want_override = false;
+		if (st->thermal_profile[0])
+			fan_preset_curve_install(st->thermal_profile);
+	}
+	curve_enabled = false;
+	want_max = st->max_fan_manual ? true : false;
+	mutex_unlock(&fan_lock);
+
+	if (st->thermal_profile[0] &&
+	    (sysfs_streq(st->thermal_profile, "silent") ||
+	     sysfs_streq(st->thermal_profile, "normal") ||
+	     sysfs_streq(st->thermal_profile, "performance")))
+		fan_thermal_profile_apply(st->thermal_profile, true);
+
+	if (want_max) {
+		fan_max_apply(true, true);
+	} else if (want_override && fan_curve_can_override()) {
+#if IS_ENABLED(CONFIG_THERMAL)
+		mutex_lock(&fan_lock);
+		if (!fan_temp_zone_bind_default()) {
+			curve_enabled = true;
+			curve_last_pct = -1;
+			curve_last_spd_valid = false;
+			fan_curve_schedule_locked();
+		}
+		mutex_unlock(&fan_lock);
+#endif
+	}
+
+	fan_persist_save();
 }
 
 static ssize_t cpu_fan_rpm_show(struct device *dev,
@@ -930,44 +1265,14 @@ static ssize_t max_fan_store(struct device *dev,
 			     const char *buf, size_t count)
 {
 	unsigned long v;
-	int enabled;
-	int ret;
 
 	if (kstrtoul(buf, 10, &v))
 		return -EINVAL;
 	if (v > 1)
 		return -EINVAL;
 
-	if (v)
-		fan_curve_disable_sync();
-
-	mutex_lock(&fan_lock);
-
-	if (!v) {
-		fan_max_keepalive_armed = false;
-		cancel_delayed_work_sync(&fan_max_keepalive);
-	}
-
-	enabled = v ? 1 : 0;
-
-	if (fan_iface == OMEN_FAN_IF_VICTUS_S && v)
-		fan_victus_userdefine_trigger();
-
-	ret = hp_wmi_perform_query(HPWMI_GM_FAN_SPEED_MAX_SET, HPWMI_GAMING,
-				   &enabled, sizeof(enabled), 0);
-	if (ret) {
-		mutex_unlock(&fan_lock);
-		return -EIO;
-	}
-
-	max_fan_state = v ? 1 : 0;
-	max_fan_known = true;
-
-	if (v) {
-		fan_max_keepalive_armed = true;
-		schedule_delayed_work(&fan_max_keepalive, FAN_KEEPALIVE_JIFFIES);
-	}
-	mutex_unlock(&fan_lock);
+	fan_max_apply(v ? true : false, true);
+	fan_persist_save();
 	return count;
 }
 
@@ -976,12 +1281,6 @@ static ssize_t thermal_profile_show(struct device *dev,
 {
 	char name[THERMAL_NAME_SZ];
 
-	/*
-	 * Return the last applied preset (sysfs or PPD), not a raw EC byte.
-	 * Mainline hp-wmi does the same for platform_profile get so battery
-	 * snap-back / shared low_power+balanced EC values cannot disagree
-	 * with what PPD and thermal_profile_store just set.
-	 */
 	mutex_lock(&fan_lock);
 	strscpy(name, thermal_profile_name, sizeof(name));
 	mutex_unlock(&fan_lock);
@@ -1034,6 +1333,27 @@ static ssize_t fan_curve_store(struct device *dev,
 {
 	int t, p, npt = 0;
 	const char *pbuf = buf;
+	char line[16];
+	size_t len;
+
+	while (*pbuf == ' ' || *pbuf == '\t' || *pbuf == '\n' || *pbuf == '\r')
+		pbuf++;
+
+	len = 0;
+	while (pbuf[len] && pbuf[len] != ' ' && pbuf[len] != '\t' &&
+	       pbuf[len] != '\n' && pbuf[len] != '\r' && len < sizeof(line) - 1)
+		len++;
+	memcpy(line, pbuf, len);
+	line[len] = '\0';
+
+	if (sysfs_streq(line, "default") || sysfs_streq(line, "ec")) {
+		fan_curve_restore_ec(true);
+		return count;
+	}
+
+#if !IS_ENABLED(CONFIG_THERMAL)
+	return -ENODEV;
+#endif
 
 	mutex_lock(&fan_lock);
 	while (npt < MAX_CURVE_POINTS) {
@@ -1065,7 +1385,28 @@ static ssize_t fan_curve_store(struct device *dev,
 
 	curve_num_points = npt;
 	fan_curve_sort_points();
+	curve_user_saved = true;
+	curve_enabled = true;
+	curve_last_pct = -1;
+	curve_last_spd_valid = false;
+
+	if (max_fan_manual || !fan_curve_can_override()) {
+		mutex_unlock(&fan_lock);
+		fan_persist_save();
+		return count;
+	}
+
+#if IS_ENABLED(CONFIG_THERMAL)
+	if (fan_temp_zone_bind_default()) {
+		mutex_unlock(&fan_lock);
+		fan_persist_save();
+		return count;
+	}
+#endif
+
+	fan_curve_schedule_locked();
 	mutex_unlock(&fan_lock);
+	fan_persist_save();
 	return count;
 }
 
@@ -1092,29 +1433,29 @@ static ssize_t fan_curve_enable_store(struct device *dev,
 	if (v > 1)
 		return -EINVAL;
 
-#if !IS_ENABLED(CONFIG_THERMAL)
-	if (v)
-		return -ENODEV;
-#endif
-
-	mutex_lock(&fan_lock);
-	if (v && max_fan_state) {
-		mutex_unlock(&fan_lock);
-		return -EBUSY;
-	}
 	if (!v) {
-		mutex_unlock(&fan_lock);
-		fan_curve_disable_sync();
-		mutex_lock(&fan_lock);
-		fan_curve_manual_off = true;
-		mutex_unlock(&fan_lock);
+		fan_curve_restore_ec(true);
 		return count;
 	}
 
-	if (curve_num_points < 2 || !fan_tbl_valid ||
-	    fan_iface != OMEN_FAN_IF_VICTUS_S) {
+#if !IS_ENABLED(CONFIG_THERMAL)
+	return -ENODEV;
+#endif
+
+	mutex_lock(&fan_lock);
+	if (!curve_user_saved || curve_num_points < 2) {
 		mutex_unlock(&fan_lock);
 		return -EINVAL;
+	}
+	if (!fan_curve_can_override()) {
+		mutex_unlock(&fan_lock);
+		return -EINVAL;
+	}
+	if (max_fan_manual) {
+		curve_enabled = true;
+		mutex_unlock(&fan_lock);
+		fan_persist_save();
+		return count;
 	}
 
 #if IS_ENABLED(CONFIG_THERMAL)
@@ -1123,15 +1464,14 @@ static ssize_t fan_curve_enable_store(struct device *dev,
 		mutex_unlock(&fan_lock);
 		return ret;
 	}
-#else
-	mutex_unlock(&fan_lock);
-	return -ENODEV;
 #endif
 
 	curve_enabled = true;
-	fan_curve_manual_off = false;
-	schedule_delayed_work(&fan_curve_work, 1);
+	curve_last_pct = -1;
+	curve_last_spd_valid = false;
+	fan_curve_schedule_locked();
 	mutex_unlock(&fan_lock);
+	fan_persist_save();
 	return count;
 }
 
@@ -1233,11 +1573,6 @@ static ssize_t power_limits_store(struct device *dev,
 	return count;
 }
 
-/*
- * Mainline victus_s_powersource_event(): on AC/battery change while
- * Performance is active, re-send PL1/PL2 defaults so the EC picks the
- * right wattage for the new power source.
- */
 static int omen_powersource_event(struct notifier_block *nb,
 				  unsigned long event, void *data)
 {
@@ -1323,10 +1658,6 @@ static void omen_platform_profile_init_from_ec(void)
 	if (sysfs_streq(name, "unknown"))
 		return;
 
-	/*
-	 * Default EC byte is shared by balanced and low_power on Victus-S /
-	 * modern Omen. Match mainline: CTGP/PPAB both off → silent.
-	 */
 	if (sysfs_streq(name, "normal") &&
 	    !omen_gpu_thermal_get(&ctgp, &ppab, &dstate, &slowdown) &&
 	    !ctgp && !ppab)
@@ -1368,6 +1699,8 @@ static struct attribute_group fan_attr_group = {
 int omen_fan_setup(struct platform_device *pdev)
 {
 	int ret;
+	struct omen_fan_persist loaded = {};
+	bool have_persist = false;
 
 	fan_detect_iface();
 	if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
@@ -1382,6 +1715,7 @@ int omen_fan_setup(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&fan_max_keepalive, fan_max_keepalive_fn);
 	INIT_DELAYED_WORK(&fan_curve_work, fan_curve_work_fn);
+	INIT_WORK(&fan_persist_work, fan_persist_work_fn);
 	fan_pdev = pdev;
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &fan_attr_group);
@@ -1415,10 +1749,33 @@ int omen_fan_setup(struct platform_device *pdev)
 	}
 #endif
 
+	if (!curve_user_saved)
+		fan_preset_curve_install(thermal_profile_name);
+
+	if (fan_iface == OMEN_FAN_IF_VICTUS_S)
+		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
+
+	if (!fan_persist_load(&loaded))
+		have_persist = true;
+
+	fan_persist_ready = true;
+
+	if (have_persist) {
+		pr_info("restoring saved fan state (override=%u custom=%u max=%u profile=%s)\n",
+			loaded.curve_enabled, loaded.curve_user_saved,
+			loaded.max_fan_manual, loaded.thermal_profile);
+		fan_persist_apply(&loaded);
+	} else {
+		mutex_lock(&fan_lock);
+		fan_curve_schedule_locked();
+		mutex_unlock(&fan_lock);
+		fan_persist_save();
+	}
+
 	if (fan_iface == OMEN_FAN_IF_CLASSIC)
 		pr_info("fan interface: classic WMI (RPM read, max fan)\n");
 	else if (fan_iface == OMEN_FAN_IF_VICTUS_S)
-		pr_info("fan interface: Victus-S WMI (RPM read, max fan, curve)\n");
+		pr_info("fan interface: Victus-S WMI (RPM read, max fan, EC default, optional curve override)\n");
 	else
 		pr_info("fan interface: RPM queries unsupported; max_fan may still work\n");
 
@@ -1428,6 +1785,11 @@ int omen_fan_setup(struct platform_device *pdev)
 void omen_fan_cleanup(void)
 {
 	int z = 0;
+
+	fan_persist_save();
+	fan_persist_ready = false;
+	flush_work(&fan_persist_work);
+	cancel_work_sync(&fan_persist_work);
 
 #if IS_REACHABLE(CONFIG_ACPI_PLATFORM_PROFILE)
 	if (platform_profile_registered) {
@@ -1444,11 +1806,16 @@ void omen_fan_cleanup(void)
 
 	mutex_lock(&fan_lock);
 	fan_max_keepalive_armed = false;
+	max_fan_manual = false;
+	max_fan_auto = false;
+	curve_enabled = false;
 	mutex_unlock(&fan_lock);
 	cancel_delayed_work_sync(&fan_max_keepalive);
-	fan_curve_disable_sync();
+	cancel_delayed_work_sync(&fan_curve_work);
 
 	mutex_lock(&fan_lock);
+	if (fan_iface == OMEN_FAN_IF_VICTUS_S)
+		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
 	hp_wmi_perform_query(HPWMI_GM_FAN_SPEED_MAX_SET, HPWMI_GAMING,
 			     &z, sizeof(z), 0);
 	max_fan_state = 0;
@@ -1464,11 +1831,13 @@ void omen_fan_cleanup(void)
 	max_fan_state = 0;
 	fan_tbl_valid = false;
 	curve_num_points = 0;
+	curve_user_saved = false;
+	curve_last_pct = -1;
+	curve_last_spd_valid = false;
 	curve_tz_name[0] = '\0';
 #if IS_ENABLED(CONFIG_THERMAL)
 	curve_tz = NULL;
 #endif
-	fan_curve_manual_off = false;
 	power_limits_known = false;
 	power_pl1 = HP_POWER_LIMIT_DEFAULT;
 	power_pl2 = HP_POWER_LIMIT_DEFAULT;

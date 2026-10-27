@@ -384,7 +384,9 @@ ls -la /sys/devices/platform/omen-rgb-keyboard/rgb_zones/
 - WMI Interface: Uses HP's native WMI commands for maximum compatibility
 - Buffer Layout: Matches HP's Windows implementation exactly
 - Animation System: CPU-efficient timer-based updates with 20 FPS
-- State Persistence: Saves settings to `/var/lib/omen-rgb-keyboard/state`
+- State Persistence: RGB/animation → `/var/lib/omen-rgb-keyboard/state`; fan mode/curves → `/var/lib/omen-rgb-keyboard/fan_state`
+
+> Fan sysfs usage (EC default, custom curves, max fan, PPD) is documented in the repository [README](https://github.com/alessandromrc/omen-rgb-keyboard#fan-control-sysdevicesplatformomen-rgb-keyboardfan).
 - Kernel Compatibility: Linux 5.0+
 
 ## License
