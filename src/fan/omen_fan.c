@@ -9,6 +9,16 @@
  * fan (release at <= 80%). max_fan is always available. PPD drives the same
  * silent/normal/performance thermal modes via platform_profile.
  *
+ * Silent and normal share the DEFAULT thermal WMI byte. PPAB stays enabled on
+ * silent: clearing it makes many Omen ECs leave zero-RPM and hold a low spin
+ * (power-saver louder than balanced). Omen boards (e.g. 8BB3) need v1 thermal
+ * bytes (0x30/0x31) even when the fan interface is Victus-S.
+ *
+ * On these boards EC-automatic fans often ignore thermal mode (0 RPM even at
+ * ~80C). Unless the user saved a custom curve, profile switches apply the
+ * built-in silent/normal/performance curves. Curve percent 0 means true
+ * zero-RPM (WMI automatic), not the BIOS manual floor.
+ *
  * Author: alessandromrc
  */
 
@@ -16,6 +26,7 @@
 
 #include <linux/acpi.h>
 #include <linux/device.h>
+#include <linux/dmi.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
@@ -271,13 +282,35 @@ static int omen_gpu_modes_for_profile(const char *name)
 		ctgp = false;
 		ppab = true;
 	} else if (sysfs_streq(name, "silent")) {
+		/*
+		 * Keep PPAB on. PPAB-off disables zero-RPM on boards like
+		 * Omen Transcend 16 (8BB3), so power-saver becomes louder
+		 * than balanced. Silent then matches balanced for GPU boost
+		 * flags; the DEFAULT thermal byte is already shared.
+		 */
 		ctgp = false;
-		ppab = false;
+		ppab = true;
 	} else {
 		return -EINVAL;
 	}
 
 	return omen_gpu_thermal_set(ctgp, ppab, 1);
+}
+
+/*
+ * Mainline hp-wmi: several Omen boards use Victus-S fan WMI but Omen v1
+ * thermal profile bytes (0x30/0x31). Prefer those when DMI says Omen.
+ */
+static bool fan_thermal_use_omen_v1(void)
+{
+	const char *board = dmi_get_system_info(DMI_BOARD_NAME);
+	const char *product = dmi_get_system_info(DMI_PRODUCT_NAME);
+
+	if (board && !strcmp(board, "8BB3"))
+		return true;
+	if (product && strstr(product, "OMEN"))
+		return true;
+	return false;
 }
 
 static int fan_load_victus_fan_table(void)
@@ -450,18 +483,26 @@ static void fan_curve_schedule_locked(void)
 }
 
 /*
- * After a thermal preset change: refresh the reference table only when the
- * user has no saved custom points. Never auto-start an override — EC stays
- * in control unless curve_enabled is already set.
+ * After a thermal preset change: refresh the reference table when the user
+ * has no saved custom points, and drive that preset via WMI (EC-automatic
+ * alone does not follow thermal mode on several Omen boards).
+ *
+ * Only re-send fan-speed automatic when dropping an override — not on every
+ * profile switch (that can fight the EC curve).
  */
 static void fan_curve_after_profile(const char *name)
 {
 	bool keep_override;
+	bool had_override;
 	bool release_to_ec;
 
 	mutex_lock(&fan_lock);
-	if (!curve_user_saved)
+	had_override = curve_enabled;
+
+	if (!curve_user_saved) {
 		fan_preset_curve_install(name);
+		curve_enabled = true;
+	}
 
 	keep_override = curve_enabled && !max_fan_manual &&
 			fan_curve_can_override();
@@ -478,7 +519,7 @@ static void fan_curve_after_profile(const char *name)
 	}
 #endif
 
-	release_to_ec = !keep_override && !max_fan_state &&
+	release_to_ec = had_override && !keep_override && !max_fan_state &&
 			fan_iface == OMEN_FAN_IF_VICTUS_S;
 
 	if (!max_fan_manual && !fan_in_performance() && !max_fan_auto)
@@ -515,20 +556,22 @@ static int fan_thermal_profile_apply(const char *name, bool from_pp)
 #endif
 
 	if (sysfs_streq(name, "performance")) {
-		if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
-			primary = OMEN_V0_PERFORMANCE;
-			fallback = OMEN_V1_PERFORMANCE;
-		} else {
+		if (fan_thermal_use_omen_v1() ||
+		    fan_iface != OMEN_FAN_IF_VICTUS_S) {
 			primary = OMEN_V1_PERFORMANCE;
 			fallback = OMEN_V0_PERFORMANCE;
+		} else {
+			primary = OMEN_V0_PERFORMANCE;
+			fallback = OMEN_V1_PERFORMANCE;
 		}
 	} else if (sysfs_streq(name, "normal") || sysfs_streq(name, "silent")) {
-		if (fan_iface == OMEN_FAN_IF_VICTUS_S) {
-			primary = OMEN_V0_DEFAULT;
-			fallback = OMEN_V1_DEFAULT;
-		} else {
+		if (fan_thermal_use_omen_v1() ||
+		    fan_iface != OMEN_FAN_IF_VICTUS_S) {
 			primary = OMEN_V1_DEFAULT;
 			fallback = OMEN_V0_DEFAULT;
+		} else {
+			primary = OMEN_V0_DEFAULT;
+			fallback = OMEN_V1_DEFAULT;
 		}
 	} else {
 		return -EINVAL;
@@ -840,12 +883,13 @@ static void fan_curve_sort_points(void)
 
 static void fan_preset_curve_install(const char *name)
 {
-	static const int silent_t[] = { 35, 50, 65, 80, 95 };
-	static const int silent_p[] = { 12, 20, 34, 52, 72 };
-	static const int normal_t[] = { 35, 52, 68, 82, 98 };
-	static const int normal_p[] = { 22, 36, 55, 78, 95 };
-	static const int performance_t[] = { 30, 48, 62, 76, 92 };
-	static const int performance_p[] = { 35, 50, 68, 88, 100 };
+	/* 0% => WMI automatic (true zero-RPM). Higher presets spin earlier. */
+	static const int silent_t[] = { 50, 60, 70, 85, 95 };
+	static const int silent_p[] = { 0, 20, 35, 50, 65 };
+	static const int normal_t[] = { 45, 55, 68, 82, 98 };
+	static const int normal_p[] = { 0, 28, 55, 78, 95 };
+	static const int performance_t[] = { 40, 50, 62, 76, 92 };
+	static const int performance_p[] = { 0, 45, 68, 88, 100 };
 	const int *t, *p;
 	int i, n;
 
@@ -1031,7 +1075,15 @@ static void fan_curve_work_fn(struct work_struct *work)
 			 !max_fan_state;
 
 	if (apply_override) {
-		spd = fan_percent_to_cpu_speed((unsigned int)pct);
+		/*
+		 * Manual Victus speeds cannot reach true 0 RPM (BIOS floor).
+		 * Percent 0 hands control back to EC automatic so zero-RPM
+		 * works; any positive percent uses the fan table.
+		 */
+		if (pct <= 0)
+			spd = HP_FAN_SPEED_AUTOMATIC;
+		else
+			spd = fan_percent_to_cpu_speed((unsigned int)pct);
 		if (!curve_last_spd_valid || spd != curve_last_spd) {
 			ret = fan_victus_wmi_speed_set(spd);
 			if (ret)
@@ -1658,6 +1710,7 @@ static void omen_platform_profile_init_from_ec(void)
 	if (sysfs_streq(name, "unknown"))
 		return;
 
+	/* Legacy: older builds cleared PPAB for silent. */
 	if (sysfs_streq(name, "normal") &&
 	    !omen_gpu_thermal_get(&ctgp, &ppab, &dstate, &slowdown) &&
 	    !ctgp && !ppab)
@@ -1749,9 +1802,6 @@ int omen_fan_setup(struct platform_device *pdev)
 	}
 #endif
 
-	if (!curve_user_saved)
-		fan_preset_curve_install(thermal_profile_name);
-
 	if (fan_iface == OMEN_FAN_IF_VICTUS_S)
 		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
 
@@ -1766,10 +1816,8 @@ int omen_fan_setup(struct platform_device *pdev)
 			loaded.max_fan_manual, loaded.thermal_profile);
 		fan_persist_apply(&loaded);
 	} else {
-		mutex_lock(&fan_lock);
-		fan_curve_schedule_locked();
-		mutex_unlock(&fan_lock);
-		fan_persist_save();
+		/* No saved state: apply built-in curve for the active profile. */
+		fan_curve_after_profile(thermal_profile_name);
 	}
 
 	if (fan_iface == OMEN_FAN_IF_CLASSIC)
