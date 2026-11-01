@@ -478,6 +478,15 @@ int fourzone_setup(struct platform_device *dev)
 	omen_kbd_led.max_brightness = 100;
 	omen_kbd_led.brightness_set_blocking = omen_kbd_brightness_set;
 	omen_kbd_led.brightness_get = omen_kbd_brightness_get;
+	/*
+	 * The LED is devm-registered, so it is unregistered by
+	 * platform_device_unregister() in hp_wmi_exit(), after
+	 * fourzone_cleanup() has freed zone_data. Without this flag,
+	 * led_classdev_unregister() sets the LED to 0, which writes black to
+	 * the EC through the freed zone_data and queues a state save with
+	 * brightness 0 after flush_animation_state() has already run.
+	 */
+	omen_kbd_led.flags |= LED_RETAIN_AT_SHUTDOWN;
 	return 0;
 
 err_free_names:
@@ -514,5 +523,8 @@ void fourzone_cleanup(void)
 	kfree(zone_dev_attrs);
 	kfree(zone_attrs);
 	kfree(zone_data);
+	zone_dev_attrs = NULL;
+	zone_attrs = NULL;
+	zone_data = NULL;
 }
 
