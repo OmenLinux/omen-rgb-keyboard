@@ -47,6 +47,7 @@
 #endif
 
 #include "omen_fan.h"
+#include "omen_state.h"
 #include "omen_wmi.h"
 
 enum omen_fan_iface {
@@ -1129,6 +1130,8 @@ static void fan_persist_work_fn(struct work_struct *work)
 	struct omen_fan_persist st;
 	struct file *fp;
 	loff_t pos = 0;
+	ssize_t written;
+	int err;
 
 	mutex_lock(&fan_persist_mutex);
 	if (!fan_persist_pending_valid) {
@@ -1144,8 +1147,13 @@ static void fan_persist_work_fn(struct work_struct *work)
 		pr_warn("fan state save failed: %ld\n", PTR_ERR(fp));
 		return;
 	}
-	kernel_write(fp, &st, sizeof(st), &pos);
-	filp_close(fp, NULL);
+	written = kernel_write(fp, &st, sizeof(st), &pos);
+	err = filp_close(fp, NULL);
+	if (written != sizeof(st))
+		pr_warn("fan state save failed: write returned %zd of %zu bytes\n",
+			written, sizeof(st));
+	else if (err)
+		pr_warn("fan state save failed: close returned %d\n", err);
 }
 
 static void fan_persist_save(void)
@@ -1181,16 +1189,15 @@ static void fan_persist_save(void)
 
 static int fan_persist_load(struct omen_fan_persist *out)
 {
-	struct file *fp;
-	loff_t pos = 0;
 	ssize_t ret;
 
-	fp = filp_open(FAN_STATE_PATH, O_RDONLY, 0);
-	if (IS_ERR(fp))
+	ret = omen_read_state_file(FAN_STATE_PATH, out, sizeof(*out));
+	if (ret == -ENOENT)
 		return -ENOENT;
-
-	ret = kernel_read(fp, out, sizeof(*out), &pos);
-	filp_close(fp, NULL);
+	if (ret < 0) {
+		pr_warn("fan state load from %s failed: %zd\n", FAN_STATE_PATH, ret);
+		return ret;
+	}
 	if (ret != sizeof(*out))
 		return -EINVAL;
 	if (out->magic != FAN_STATE_MAGIC || out->version != FAN_STATE_VERSION)

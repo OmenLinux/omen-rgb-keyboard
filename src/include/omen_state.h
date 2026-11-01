@@ -38,6 +38,13 @@ void save_animation_state(void);
 void load_animation_state(void);
 
 /**
+ * omen_read_state_file - Read a state file with kernel credentials
+ *
+ * Returns the number of bytes read or a negative errno.
+ */
+ssize_t omen_read_state_file(const char *path, void *buf, size_t len);
+
+/**
  * flush_animation_state - Wait for a pending async save to finish
  */
 void flush_animation_state(void);

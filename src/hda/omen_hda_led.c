@@ -325,6 +325,9 @@ int omen_hda_led_init(void)
 {
 	pr_debug("Initializing HDA LED control\n");
 
+	/* omen_hda_led_cleanup() cancels this unconditionally */
+	INIT_DELAYED_WORK(&codec_retry_work, codec_retry_work_handler);
+
 	omen_codec = find_suitable_hda_codec();
 
 	if (!omen_codec) {
@@ -334,8 +337,6 @@ int omen_hda_led_init(void)
 		pr_warn("Mute LED functionality will not be available until codec is ready\n");
 		pr_info("Will retry codec discovery asynchronously (up to %d attempts, every %d seconds)\n",
 			MAX_CODEC_RETRIES, CODEC_RETRY_DELAY_MS / 1000);
-
-		INIT_DELAYED_WORK(&codec_retry_work, codec_retry_work_handler);
 
 		codec_retry_count = 0;
 

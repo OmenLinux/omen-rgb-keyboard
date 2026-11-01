@@ -30,6 +30,8 @@ static void save_animation_state_work(struct work_struct *work)
 	struct animation_state state;
 	struct file *fp;
 	loff_t pos = 0;
+	ssize_t written;
+	int err;
 
 	mutex_lock(&anim_persist_mutex);
 	if (!anim_persist_pending_valid) {
@@ -50,8 +52,17 @@ static void save_animation_state_work(struct work_struct *work)
 		return;
 	}
 
-	kernel_write(fp, &state, sizeof(state), &pos);
-	filp_close(fp, NULL);
+	written = kernel_write(fp, &state, sizeof(state), &pos);
+	err = filp_close(fp, NULL);
+	if (written != sizeof(state)) {
+		pr_warn("Failed to save animation state: write returned %zd of %zu bytes\n",
+			written, sizeof(state));
+		return;
+	}
+	if (err) {
+		pr_warn("Failed to save animation state: close returned %d\n", err);
+		return;
+	}
 	pr_info("Animation state saved\n");
 }
 
@@ -86,11 +97,50 @@ void flush_animation_state(void)
 		flush_work(&anim_persist_work);
 }
 
+struct omen_read_work {
+	struct work_struct work;
+	const char *path;
+	void *buf;
+	size_t len;
+	ssize_t ret;
+};
+
+static void omen_read_file_work(struct work_struct *work)
+{
+	struct omen_read_work *rw = container_of(work, struct omen_read_work, work);
+	struct file *fp;
+	loff_t pos = 0;
+
+	fp = filp_open(rw->path, O_RDONLY, 0);
+	if (IS_ERR(fp)) {
+		rw->ret = PTR_ERR(fp);
+		return;
+	}
+	rw->ret = kernel_read(fp, rw->buf, rw->len, &pos);
+	filp_close(fp, NULL);
+}
+
+ssize_t omen_read_state_file(const char *path, void *buf, size_t len)
+{
+	struct omen_read_work rw = { .path = path, .buf = buf, .len = len };
+
+	/*
+	 * Read in kworker context (kernel creds), like the save path. Module
+	 * init runs with the credentials of whoever loads the module; at boot
+	 * that is systemd-modules-load, which SELinux does not allow to read
+	 * /var/lib (the denial is dontaudit'ed, so nothing shows in the log).
+	 */
+	INIT_WORK_ONSTACK(&rw.work, omen_read_file_work);
+	schedule_work(&rw.work);
+	flush_work(&rw.work);
+	destroy_work_on_stack(&rw.work);
+
+	return rw.ret;
+}
+
 void load_animation_state(void)
 {
-	struct file *fp;
 	struct animation_state state;
-	loff_t pos = 0;
 	ssize_t ret;
 
 	if (!anim_persist_inited) {
@@ -98,20 +148,21 @@ void load_animation_state(void)
 		anim_persist_inited = true;
 	}
 
-	fp = filp_open(STATE_FILE_PATH, O_RDONLY, 0);
-	if (IS_ERR(fp)) {
+	ret = omen_read_state_file(STATE_FILE_PATH, &state, sizeof(state));
+	if (ret == -ENOENT) {
 		pr_info("No saved animation state found\n");
 		return;
 	}
-
-	ret = kernel_read(fp, &state, sizeof(state), &pos);
-	if (ret != sizeof(state)) {
-		pr_warn("Failed to read animation state\n");
-		filp_close(fp, NULL);
+	if (ret < 0) {
+		pr_warn("Failed to read animation state from %s: %zd\n",
+			STATE_FILE_PATH, ret);
 		return;
 	}
-
-	filp_close(fp, NULL);
+	if (ret != sizeof(state)) {
+		pr_warn("Failed to read animation state: got %zd of %zu bytes\n",
+			ret, sizeof(state));
+		return;
+	}
 
 	if (state.mode >= 0 && state.mode < ANIMATION_COUNT)
 		current_animation = state.mode;
