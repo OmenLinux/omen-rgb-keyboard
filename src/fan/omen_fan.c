@@ -180,6 +180,8 @@ static int fan_learned_cpu_max;
 static int fan_learned_gpu_max;
 static bool fan_rpm_learning;
 static struct work_struct fan_max_rpm_work;
+static struct delayed_work fan_max_rpm_probe_work;
+static int fan_max_rpm_probe_tries;
 static DEFINE_MUTEX(fan_max_rpm_mutex);
 static u32 fan_max_rpm_save_cpu;
 static u32 fan_max_rpm_save_gpu;
@@ -2382,9 +2384,24 @@ static int fan_max_rpm_load(void)
 	return 0;
 }
 
+static void fan_rpm_note(int cpu, int gpu, int *best_cpu, int *best_gpu,
+			 int *quiet)
+{
+	if (cpu > *best_cpu) {
+		*best_cpu = cpu;
+		*quiet = 0;
+	} else if (*best_cpu >= 2500) {
+		(*quiet)++;
+	}
+	if (gpu > *best_gpu)
+		*best_gpu = gpu;
+}
+
 /*
  * Spin the fans at hardware max and record the tach. Only used when
- * max_rpm has never been stored.
+ * max_rpm has never been stored. Some boards report a real tach during
+ * the max command. Others keep that read at 0 until the command is
+ * cleared, then report the speed the fans are still turning.
  */
 static int fan_learn_max_rpm(void)
 {
@@ -2410,14 +2427,7 @@ static int fan_learn_max_rpm(void)
 		msleep(500);
 		cpu = fan_rpm_read(FAN_CPU);
 		gpu = fan_rpm_read(FAN_GPU);
-		if (cpu > best_cpu) {
-			best_cpu = cpu;
-			quiet = 0;
-		} else if (best_cpu >= 2500) {
-			quiet++;
-		}
-		if (gpu > best_gpu)
-			best_gpu = gpu;
+		fan_rpm_note(cpu, gpu, &best_cpu, &best_gpu, &quiet);
 		if (quiet >= 4)
 			break;
 	}
@@ -2425,6 +2435,21 @@ static int fan_learn_max_rpm(void)
 	en = 0;
 	hp_wmi_perform_query(HPWMI_GM_FAN_SPEED_MAX_SET, HPWMI_GAMING,
 			     &en, sizeof(en), 0);
+
+	if (best_cpu < 1000) {
+		pr_info("max fan tach read cpu %d gpu %d while boost was on; sampling after release\n",
+			best_cpu, best_gpu);
+		quiet = 0;
+		for (i = 0; i < 16; i++) {
+			msleep(250);
+			cpu = fan_rpm_read(FAN_CPU);
+			gpu = fan_rpm_read(FAN_GPU);
+			fan_rpm_note(cpu, gpu, &best_cpu, &best_gpu, &quiet);
+			if (best_cpu >= 2500 && quiet >= 4)
+				break;
+		}
+	}
+
 	if (fan_iface == OMEN_FAN_IF_VICTUS_S)
 		fan_victus_wmi_speed_set(HP_FAN_SPEED_AUTOMATIC);
 
@@ -2440,6 +2465,41 @@ static int fan_learn_max_rpm(void)
 	fan_learned_gpu_max = best_gpu;
 	pr_info("learned max fan RPM: cpu %d gpu %d\n", best_cpu, best_gpu);
 	return 0;
+}
+
+static void fan_max_rpm_probe_work_fn(struct work_struct *work)
+{
+	int ret;
+
+	if (fan_learned_cpu_max >= 1000 && fan_learned_cpu_max <= 20000)
+		return;
+	if (!fan_max_rpm_load()) {
+		pr_info("max fan RPM already stored: cpu %d gpu %d\n",
+			fan_learned_cpu_max, fan_learned_gpu_max);
+		return;
+	}
+
+	fan_rpm_learning = true;
+	ret = fan_learn_max_rpm();
+	fan_rpm_learning = false;
+	if (!ret) {
+		fan_max_rpm_store();
+		mutex_lock(&fan_lock);
+		cpu_curve.last_pct = -1;
+		gpu_curve.last_pct = -1;
+		curve_last_spd_valid = false;
+		fan_curve_schedule_locked();
+		mutex_unlock(&fan_lock);
+		return;
+	}
+
+	if (ret == -EIO && fan_max_rpm_probe_tries < 3) {
+		fan_max_rpm_probe_tries++;
+		schedule_delayed_work(&fan_max_rpm_probe_work, 30 * HZ);
+		return;
+	}
+	pr_info("max fan RPM not learned (%d); percent maps across the BIOS table\n",
+		ret);
 }
 
 int omen_fan_setup(struct platform_device *pdev)
@@ -2465,6 +2525,7 @@ int omen_fan_setup(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&fan_curve_work, fan_curve_work_fn);
 	INIT_WORK(&fan_persist_work, fan_persist_work_fn);
 	INIT_WORK(&fan_max_rpm_work, fan_max_rpm_save_work);
+	INIT_DELAYED_WORK(&fan_max_rpm_probe_work, fan_max_rpm_probe_work_fn);
 	fan_pdev = pdev;
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &fan_attr_group);
@@ -2520,12 +2581,16 @@ int omen_fan_setup(struct platform_device *pdev)
 		fan_rpm_learning = true;
 		ret = fan_learn_max_rpm();
 		fan_rpm_learning = false;
-		if (ret)
-			pr_info("max fan RPM not learned (%d); percent maps across the BIOS table\n",
-				ret);
-		else {
+		if (!ret) {
 			fan_max_rpm_store();
 			flush_work(&fan_max_rpm_work);
+		} else if (ret == -EIO) {
+			pr_info("max fan RPM not learned yet; will retry\n");
+			fan_max_rpm_probe_tries = 1;
+			schedule_delayed_work(&fan_max_rpm_probe_work, 30 * HZ);
+		} else {
+			pr_info("max fan RPM not learned (%d); percent maps across the BIOS table\n",
+				ret);
 		}
 	}
 
@@ -2557,6 +2622,7 @@ void omen_fan_cleanup(void)
 
 	fan_persist_save();
 	fan_persist_ready = false;
+	cancel_delayed_work_sync(&fan_max_rpm_probe_work);
 	flush_work(&fan_persist_work);
 	cancel_work_sync(&fan_persist_work);
 	flush_work(&fan_max_rpm_work);

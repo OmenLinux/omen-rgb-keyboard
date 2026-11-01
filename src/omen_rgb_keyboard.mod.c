@@ -18,4 +18,4 @@ __section(".gnu.linkonce.this_module") = {
 MODULE_INFO(depends, "sparse-keymap,wmi,snd-hda-core,snd");
 
 
-MODULE_INFO(srcversion, "3BB7B07C477F22AB9082CB6");
+MODULE_INFO(srcversion, "3A7A1945DF0C9E7D029D3FD");
