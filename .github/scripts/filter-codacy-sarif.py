@@ -63,16 +63,18 @@ def filter_sarif(sarif):
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit(f"usage: {sys.argv[0]} results.sarif")
+    if len(sys.argv) != 3:
+        sys.exit(f"usage: {sys.argv[0]} input.sarif output.sarif")
 
-    path = sys.argv[1]
-    with open(path, encoding="utf-8") as handle:
+    source = sys.argv[1]
+    destination = sys.argv[2]
+    with open(source, encoding="utf-8") as handle:
         sarif = json.load(handle)
 
     kept, dropped = filter_sarif(sarif)
 
-    with open(path, "w", encoding="utf-8") as handle:
+    # The Codacy action writes the input as root, so overwrite fails in CI.
+    with open(destination, "w", encoding="utf-8") as handle:
         json.dump(sarif, handle)
 
     print(f"code scanning upload: kept {kept}, dropped {dropped}")
