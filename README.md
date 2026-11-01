@@ -43,7 +43,7 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - **12 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
 - **Mute Button LED Control** - Automatic LED sync with system mute state via HDA codec
-- **Fan control** - EC-automatic by default, optional custom curve override (persisted across reboot), max fan, hysteresis, auto max under Performance, thermal presets (silent / normal / performance), CPU PL1/PL2, and PPD via `platform_profile` (see below)
+- **Fan control** - EC-automatic by default, optional CPU and GPU curves (points and the on/off switch persist across reboot), hardware max when a curve asks for it, hysteresis, thermal presets (silent / normal / performance), CPU PL1/PL2, and PPD via `platform_profile` (see below)
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
 
@@ -256,21 +256,24 @@ cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone01
 
 Requires the same HP WMI GUID as RGB; **blacklist `hp_wmi`** if both would load (see above). Custom fan curves need Victus-S WMI, a valid BIOS fan table, and **`CONFIG_THERMAL`** so a thermal zone can be read. **`max_fan` works on all supported fan interfaces.**
 
-By default the **EC owns the fans** (automatic). `fan_curve` shows a reference table for the active thermal preset; writing your own setpoints **overrides** the EC. Mode and custom points are saved under `/var/lib/omen-rgb-keyboard/fan_state` and restored after reboot.
+By default the **EC owns the fans** (automatic). `fan_curve` shows the reference table for the active thermal preset until you save your own points. Writing `fan_curve` turns the custom-speed switch on and overrides the EC. The points and that switch are stored in `/var/lib/omen-rgb-keyboard/fan_state` and come back the same way after reboot. With the switch off, the points stay saved and the EC runs the fans.
 
 | File | Purpose |
 |------|---------|
 | `cpu_fan_rpm`, `gpu_fan_rpm` | Read-only RPM (where supported) |
+| `max_rpm` | CPU and GPU maximum RPM. The driver measures this the first time it loads, stores it with the animation state, and only reads it after that |
 | `max_fan` | `0` / `1` — max fans off/on (always available). Manual `1` is sticky until you write `0` |
-| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset). Also applies GPU CTGP/PPAB and re-actualizes PL1/PL2 defaults. Does **not** start a software curve or wipe saved customs |
+| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset). Also applies GPU CTGP/PPAB and re-actualizes PL1/PL2 defaults. Leaves a saved custom curve and the custom-speed switch alone. With no saved custom, the built-in curve for that preset is shown and applied |
 | `power_limits` | CPU PL1/PL2 in watts (`PL1 PL2`), or `default` / `0 0` to restore BIOS defaults. PL2 must be ≥ PL1. Read shows last written values (firmware has no get) |
-| `fan_curve` | Read the active/reference points; write `temp:pct` pairs to save a custom curve and override the EC; write `default` or `ec` to return control to the EC (customs kept) |
-| `fan_curve_enable` | `0` returns to EC automatic (keeps saved customs); `1` re-applies the saved custom curve |
-| `fan_temp_zone` | Optional thermal zone name (e.g. `x86_pkg_temp`); if unset, the driver tries common zone names |
+| `fan_curve` | CPU curve. Read points as `temp:percent`. Write pairs to save a custom curve and turn the switch on. Write `default` or `ec` to return **both** fans to the EC (points kept, switch off). Until a GPU curve is set, this curve also drives the GPU fan |
+| `gpu_fan_curve` | GPU curve, same format. Saving one does not turn the switch on by itself. Write `cpu` or `default` to follow `fan_curve` again. Read shows `(cpu)` while it is following |
+| `fan_curve_enable` | `0` returns both fans to the EC and keeps the saved points. `1` drives the saved CPU curve, and the GPU curve too if one is saved. This switch is restored after reboot |
+| `fan_temp_zone` | Thermal zone for the CPU curve (e.g. `x86_pkg_temp`). If unset, the driver tries common zone names |
+| `gpu_fan_temp_zone` | Thermal zone for the GPU curve. Empty means the CPU zone, including when the laptop has no separate GPU sensor |
 
-**Hysteresis:** while a custom curve is applied, fan percent uses a 3°C band so speeds do not chatter around a setpoint. WMI speed is only rewritten when the mapped speed byte changes.
+**Hysteresis:** while a curve is applied, fan percent uses a 3°C band so speeds do not chatter around a setpoint. WMI speed is only rewritten when the mapped speed byte changes.
 
-**Auto max (Performance):** when `thermal_profile` / PPD is `performance` and curve demand reaches ≥ **90%**, the driver engages max fan automatically; it releases again at ≤ **80%** (or when leaving Performance). A manual `max_fan=1` is never cleared by this path.
+**Max RPM:** the first time the driver loads with no stored measurement, it runs the fans at hardware max, reads the tach, and saves that CPU/GPU pair the same way animation settings are saved (`/var/lib/omen-rgb-keyboard/max_rpm`). `fan/max_rpm` shows those numbers. Every later load uses the stored value and does not measure again. Each curve's percent is a straight ramp up to that fan's max. **100** (or `max`) on a curve is that hardware max. The max-fan command spins both fans, so it is used only when every fan the driver is controlling asks for 100. A single fan at 100 gets the top manual speed for that fan. It releases when the curve drops below 100 (the 3°C band still applies). A manual `max_fan=1` is never cleared by this path.
 
 While `thermal_profile` is `performance`, AC plug/unplug re-sends PL1/PL2 defaults so the EC picks the correct wattage for the new power source (same fix as mainline `hp-wmi`).
 
@@ -311,17 +314,25 @@ Curves are **space-separated** pairs:
 **`temperature_C:fan_percent`**
 
 - **Temperature:** degrees Celsius from the selected thermal zone (typically CPU package).
-- **Fan percent:** `0`–`100`, mapped by the driver into the EC’s allowed fan range using the BIOS fan table.
+- **Fan percent:** `0`–`100`. `0` is zero-RPM. `1`–`99` scale linearly in RPM up to the measured hardware max. `100` (or the word `max`) is that max. A value above 100 is read as an RPM and stored as the matching percent, so existing percent curves keep working and read back the same way.
 
 You need **at least 2** points and may use **up to 8** points per curve. Order does not matter; the driver sorts by temperature. Between two adjacent points the driver **linearly interpolates** fan percent vs temperature; below the lowest point it clamps to that point’s percent, and above the highest it clamps to the last point’s percent.
 
 ```bash
 F=/sys/devices/platform/omen-rgb-keyboard/fan
 
-# Override EC with a custom curve (also saved across reboot)
-echo "30:20 40:28 50:38 60:50 72:65 82:78 92:90" | tee "$F/fan_curve"
+# Same format as before. 100 at 92°C is the measured max RPM.
+echo "45:0 60:40 75:70 92:100" | tee "$F/fan_curve"
 
-# Hand fans back to the EC — custom points stay in fan_curve
+# Or name the RPM; it is saved as a percent of that fan's learned max.
+echo "45:0 60:2400 75:3600 92:max" | tee "$F/fan_curve"
+
+# GPU fan on its own curve. CPU curve is unchanged.
+echo "40:0 70:3000 90:max" | tee "$F/gpu_fan_curve"
+# GPU follows the CPU curve again
+echo cpu | tee "$F/gpu_fan_curve"
+
+# Hand both fans back to the EC — custom points stay
 echo 0 | tee "$F/fan_curve_enable"
 # or: echo default | tee "$F/fan_curve"
 
@@ -329,7 +340,7 @@ echo 0 | tee "$F/fan_curve_enable"
 echo 1 | tee "$F/fan_curve_enable"
 ```
 
-Until you write custom points, `fan_curve` shows the built-in silent / normal / performance reference for the active `thermal_profile` (five points each). Switching profile updates that reference only when you have **not** saved a custom curve; saved customs are never discarded by profile/PPD changes or restore-to-EC.
+Until you write custom points, `fan_curve` shows the built-in silent / normal / performance curve for the active `thermal_profile` (five points each, still in percent). Switching profile updates that curve only when you have **not** saved a custom one. Saved points are kept across profile changes, restore-to-EC, and reboot. The on/off switch is kept too: if it was on, both curves drive again after boot; if it was off, the EC runs the fans and the points are still there when you turn it back on.
 
 ### Color Format
 
