@@ -15,6 +15,7 @@
 #include <linux/leds.h>
 #include <linux/moduleparam.h>
 #include <linux/string.h>
+#include <linux/sysfs.h>
 
 #include "omen_rgb_keyboard.h"
 #include "omen_wmi.h"
@@ -78,8 +79,13 @@ struct platform_zone *match_zone(struct device_attribute *attr)
 int fourzone_update_led(struct platform_zone *zone, enum hp_wmi_command rw)
 {
 	u8 state[128];
-	int ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET, HPWMI_FOURZONE,
-				       &state, sizeof(state), sizeof(state));
+	int ret;
+
+	if (!zone || zone->offset > sizeof(state) - 3)
+		return -EINVAL;
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_COLOR_GET, HPWMI_FOURZONE,
+				   &state, sizeof(state), sizeof(state));
 	if (ret) {
 		pr_warn("fourzone_color_get returned error 0x%x\n", ret);
 		return ret <= 0 ? ret : -EINVAL;
@@ -192,13 +198,13 @@ ssize_t zone_show(struct device *dev, struct device_attribute *attr,
 	struct platform_zone *target_zone = match_zone(attr);
 	int ret;
 	if (target_zone == NULL)
-		return sprintf(buf, "red: -1, green: -1, blue: -1\n");
+		return sysfs_emit(buf, "red: -1, green: -1, blue: -1\n");
 	ret = fourzone_update_led(target_zone, HPWMI_READ);
 	if (ret)
-		return sprintf(buf, "red: -1, green: -1, blue: -1\n");
-	return sprintf(buf, "#%02x%02x%02x\n",
-		       target_zone->colors.red,
-		       target_zone->colors.green, target_zone->colors.blue);
+		return sysfs_emit(buf, "red: -1, green: -1, blue: -1\n");
+	return sysfs_emit(buf, "#%02x%02x%02x\n",
+			  target_zone->colors.red,
+			  target_zone->colors.green, target_zone->colors.blue);
 }
 
 ssize_t zone_set(struct device *dev, struct device_attribute *attr,
@@ -239,7 +245,7 @@ ssize_t zone_set(struct device *dev, struct device_attribute *attr,
 ssize_t brightness_show(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
-	return sprintf(buf, "%d\n", global_brightness);
+	return sysfs_emit(buf, "%d\n", global_brightness);
 }
 
 ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
@@ -274,7 +280,7 @@ void fourzone_apply_brightness_lock(void)
 static ssize_t brightness_lock_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", brightness_lock);
+	return sysfs_emit(buf, "%d\n", brightness_lock);
 }
 
 static ssize_t brightness_lock_store(struct device *dev,
@@ -303,10 +309,10 @@ ssize_t all_show(struct device *dev, struct device_attribute *attr,
 	int ret;
 	ret = fourzone_update_led(&zone_data[0], HPWMI_READ);
 	if (ret)
-		return sprintf(buf, "red: -1, green: -1, blue: -1\n");
-	return sprintf(buf, "#%02x%02x%02x\n",
-		       zone_data[0].colors.red,
-		       zone_data[0].colors.green, zone_data[0].colors.blue);
+		return sysfs_emit(buf, "red: -1, green: -1, blue: -1\n");
+	return sysfs_emit(buf, "#%02x%02x%02x\n",
+			  zone_data[0].colors.red,
+			  zone_data[0].colors.green, zone_data[0].colors.blue);
 }
 
 ssize_t all_set(struct device *dev, struct device_attribute *attr,
@@ -346,7 +352,7 @@ static ssize_t mute_led_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
 	/* We don't have a way to read the LED state, so just return help text */
-	return sprintf(buf, "Write '1' to turn on, '0' to turn off\n");
+	return sysfs_emit(buf, "Write '1' to turn on, '0' to turn off\n");
 }
 
 static ssize_t mute_led_set(struct device *dev, struct device_attribute *attr,
@@ -372,7 +378,7 @@ static DEVICE_ATTR(mute_led, 0664, mute_led_show, mute_led_set);
 static ssize_t mute_state_show(struct device *dev, struct device_attribute *attr,
 			       char *buf)
 {
-	return sprintf(buf, "Write '1' for muted, '0' for unmuted (from userspace daemon)\n");
+	return sysfs_emit(buf, "Write '1' for muted, '0' for unmuted (from userspace daemon)\n");
 }
 
 static ssize_t mute_state_set(struct device *dev, struct device_attribute *attr,
@@ -421,7 +427,7 @@ int fourzone_setup(struct platform_device *dev)
 		goto err_free_zone_attrs;
 	}
 
-	for (u8 zone = 0; zone < ZONE_COUNT; zone++) {
+	for (zone = 0; zone < ZONE_COUNT; zone++) {
 		zone_data[zone].offset = 25 + (zone * 3);
 		ret = fourzone_update_led(&zone_data[zone], HPWMI_READ);
 		if (ret)
@@ -434,7 +440,11 @@ int fourzone_setup(struct platform_device *dev)
 	}
 
 	for (zone = 0; zone < ZONE_COUNT; zone++) {
-		sprintf(buffer, "zone%02hhX", zone);
+		if (snprintf(buffer, sizeof(buffer), "zone%02X", zone) >=
+		    (int)sizeof(buffer)) {
+			ret = -EINVAL;
+			goto err_free_names;
+		}
 		name = kstrdup(buffer, GFP_KERNEL);
 		if (!name) {
 			ret = -ENOMEM;

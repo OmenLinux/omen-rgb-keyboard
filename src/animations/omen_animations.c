@@ -16,6 +16,7 @@
 #include <linux/math.h>
 #include <linux/string.h>
 #include <linux/mutex.h>
+#include <linux/sysfs.h>
 
 #include "omen_rgb_keyboard.h"
 #include "omen_wmi.h"
@@ -481,10 +482,10 @@ static ssize_t animation_mode_show(struct device *dev, struct device_attribute *
 		"spectrum"
 	};
 
-	if (current_animation >= ANIMATION_COUNT)
-		return sprintf(buf, "unknown\n");
+	if (current_animation >= ARRAY_SIZE(mode_names))
+		return sysfs_emit(buf, "unknown\n");
 
-	return sprintf(buf, "%s\n", mode_names[current_animation]);
+	return sysfs_emit(buf, "%s\n", mode_names[current_animation]);
 }
 
 static ssize_t animation_mode_set(struct device *dev, struct device_attribute *attr,
@@ -537,7 +538,7 @@ static ssize_t animation_mode_set(struct device *dev, struct device_attribute *a
 static ssize_t animation_speed_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
 {
-	return sprintf(buf, "%d\n", animation_speed);
+	return sysfs_emit(buf, "%d\n", animation_speed);
 }
 
 static ssize_t animation_speed_set(struct device *dev, struct device_attribute *attr,
@@ -581,11 +582,11 @@ static ssize_t gradient_config_show(struct device *dev, struct device_attribute 
 		bool first_zone = true;
 		bool first_color = true;
 
-		if (g > 0) {
-			if (len >= PAGE_SIZE - 1)
-				break;
+		if (len >= PAGE_SIZE - 1)
+			break;
+
+		if (g > 0)
 			len += scnprintf(buf + len, PAGE_SIZE - len, ";");
-		}
 
 		/* Print zones */
 		for (z = 0; z < ZONE_COUNT; z++) {
@@ -611,7 +612,8 @@ static ssize_t gradient_config_show(struct device *dev, struct device_attribute 
 		}
 	}
 
-	len += scnprintf(buf + len, PAGE_SIZE - len, "\n");
+	if (len < PAGE_SIZE)
+		len += scnprintf(buf + len, PAGE_SIZE - len, "\n");
 	return len;
 }
 

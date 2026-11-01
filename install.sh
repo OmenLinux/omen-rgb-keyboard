@@ -70,9 +70,7 @@ if [ -f "scripts/omen-mute-monitor.sh" ]; then
     cp scripts/omen-mute-monitor.sh /usr/local/bin/omen-mute-monitor
     chmod +x /usr/local/bin/omen-mute-monitor
     echo "  Mute monitor script installed to: /usr/local/bin/omen-mute-monitor"
-    
-    SYSFS_PATH="/sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state"
-    
+
     # Create systemd user service
     echo "Creating systemd user service..."
     mkdir -p /etc/systemd/user

@@ -81,12 +81,11 @@ static struct hda_codec *find_hda_codec_by_card_number(int card_num, int codec_a
 			hwdep_count++;
 			if (hwdep && hwdep->private_data) {
 				struct hda_codec *codec = hwdep->private_data;
-				
-				pr_debug("Found hwdep device with codec at addr %d (vendor:0x%x)\n",
-					 codec->core.addr, codec->core.vendor_id);
-				
+
 				/* Check if this is the codec we're looking for */
-				if (codec && codec->core.addr == codec_addr) {
+				if (codec->core.addr == codec_addr) {
+					pr_debug("Found hwdep device with codec at addr %d (vendor:0x%x)\n",
+						 codec->core.addr, codec->core.vendor_id);
 					found_codec = codec;
 					pr_info("Found HDA codec on card %d, addr %d: %s\n",
 						card_num, codec_addr, codec->core.chip_name);
@@ -371,13 +370,9 @@ void omen_hda_led_cleanup(void)
 	cancel_delayed_work_sync(&codec_retry_work);
 	codec_retry_count = 0;
 	
-	/* Turn off LED before cleanup */
+	/* Turn off LED before releasing the card reference held at discovery. */
 	if (omen_codec) {
 		omen_hda_led_set_internal(false);
-	}
-	
-	if (omen_codec) {
-		/* We're holding a card reference from find_hda_codec_by_card_number */
 		if (omen_codec->card)
 			snd_card_unref(omen_codec->card);
 		omen_codec = NULL;

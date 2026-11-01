@@ -50,12 +50,24 @@ static inline int encode_outsize_for_pvsz(int outsize)
 	return 1;
 }
 
+/* Copy len bytes into dst, rejecting a length the destination cannot hold. */
+static int wmi_copy_checked(void *dst, size_t dst_size, const void *src, size_t len)
+{
+	if (len > dst_size)
+		return -EINVAL;
+	if (!len)
+		return 0;
+	if (!dst || !src)
+		return -EINVAL;
+	memcpy(dst, src, len);
+	return 0;
+}
+
 int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 			 void *buffer, int insize, int outsize)
 {
 	int mid;
 	struct bios_return *bios_return;
-	int actual_outsize;
 	union acpi_object *obj;
 	struct bios_args args = {
 		.signature = 0x55434553,
@@ -66,14 +78,21 @@ int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 	};
 	struct acpi_buffer input = {sizeof(struct bios_args), &args};
 	struct acpi_buffer output = {ACPI_ALLOCATE_BUFFER, NULL};
+	u8 *io = buffer;
+	size_t copy_len;
 	int ret = 0;
+
+	if (WARN_ON(insize < 0 || outsize < 0))
+		return -EINVAL;
+	if (WARN_ON((insize > 0 || outsize > 0) && !io))
+		return -EINVAL;
 
 	mid = encode_outsize_for_pvsz(outsize);
 	if (WARN_ON(mid < 0))
 		return mid;
-	if (WARN_ON(insize > sizeof(args.data)))
-		return -EINVAL;
-	memcpy(&args.data[0], buffer, insize);
+	ret = wmi_copy_checked(args.data, sizeof(args.data), io, insize);
+	if (ret)
+		return ret;
 
 	wmi_evaluate_method(HPWMI_BIOS_GUID, 0, mid, &input, &output);
 	obj = output.pointer;
@@ -105,13 +124,20 @@ int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 		goto out_free;
 
 	if (obj->buffer.length <= sizeof(*bios_return)) {
-		memset(buffer, 0, outsize);
+		memset(io, 0, outsize);
 		goto out_free;
 	}
 
-	actual_outsize = min(outsize, (int)(obj->buffer.length - sizeof(*bios_return)));
-	memcpy(buffer, obj->buffer.pointer + sizeof(*bios_return), actual_outsize);
-	memset(buffer + actual_outsize, 0, outsize - actual_outsize);
+	copy_len = obj->buffer.length - sizeof(*bios_return);
+	if (copy_len > (size_t)outsize)
+		copy_len = outsize;
+	ret = wmi_copy_checked(io, outsize,
+			       obj->buffer.pointer + sizeof(*bios_return),
+			       copy_len);
+	if (ret)
+		goto out_free;
+	if ((size_t)outsize > copy_len)
+		memset(io + copy_len, 0, (size_t)outsize - copy_len);
 
 out_free:
 	kfree(obj);

@@ -54,6 +54,12 @@ jobs:
           # This will handover control about PR rejection to the GitHub side
           max-allowed-issues: 2147483647
 
+      # Notes, MISRA, markdown lint, and Flawfinder "Risk is low" hits
+      # drown out the warning-level findings. Drop them before upload so
+      # GitHub closes the matching alerts on this analysis.
+      - name: Drop low-risk and style results
+        run: python3 .github/scripts/filter-codacy-sarif.py results.sarif
+
       # Upload the SARIF file generated in the previous step
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v3

@@ -668,7 +668,7 @@ static int fan_ec_profile_byte(u8 *out)
 		*out = b;
 		return 0;
 	}
-	return ret_a ? ret_a : ret_b;
+	return ret_a;
 }
 
 static const char *fan_ec_byte_to_name(u8 b)
@@ -882,30 +882,31 @@ static void fan_curve_sort_points(void)
 	}
 }
 
+/* 0% => WMI automatic (true zero-RPM). Higher presets spin earlier. */
+static const int fan_preset_silent_t[] = { 50, 60, 70, 85, 95 };
+static const int fan_preset_silent_p[] = { 0, 20, 35, 50, 65 };
+static const int fan_preset_normal_t[] = { 45, 55, 68, 82, 98 };
+static const int fan_preset_normal_p[] = { 0, 28, 55, 78, 95 };
+static const int fan_preset_performance_t[] = { 40, 50, 62, 76, 92 };
+static const int fan_preset_performance_p[] = { 0, 45, 68, 88, 100 };
+
 static void fan_preset_curve_install(const char *name)
 {
-	/* 0% => WMI automatic (true zero-RPM). Higher presets spin earlier. */
-	static const int silent_t[] = { 50, 60, 70, 85, 95 };
-	static const int silent_p[] = { 0, 20, 35, 50, 65 };
-	static const int normal_t[] = { 45, 55, 68, 82, 98 };
-	static const int normal_p[] = { 0, 28, 55, 78, 95 };
-	static const int performance_t[] = { 40, 50, 62, 76, 92 };
-	static const int performance_p[] = { 0, 45, 68, 88, 100 };
 	const int *t, *p;
 	int i, n;
 
 	if (sysfs_streq(name, "silent")) {
-		t = silent_t;
-		p = silent_p;
-		n = ARRAY_SIZE(silent_t);
+		t = fan_preset_silent_t;
+		p = fan_preset_silent_p;
+		n = ARRAY_SIZE(fan_preset_silent_t);
 	} else if (sysfs_streq(name, "normal")) {
-		t = normal_t;
-		p = normal_p;
-		n = ARRAY_SIZE(normal_t);
+		t = fan_preset_normal_t;
+		p = fan_preset_normal_p;
+		n = ARRAY_SIZE(fan_preset_normal_t);
 	} else if (sysfs_streq(name, "performance")) {
-		t = performance_t;
-		p = performance_p;
-		n = ARRAY_SIZE(performance_t);
+		t = fan_preset_performance_t;
+		p = fan_preset_performance_p;
+		n = ARRAY_SIZE(fan_preset_performance_t);
 	} else {
 		return;
 	}
@@ -1354,10 +1355,8 @@ static ssize_t thermal_profile_store(struct device *dev,
 	char line[32];
 	int ret;
 
-	if (count >= sizeof(line))
+	if (strscpy(line, buf, sizeof(line)) < 0)
 		return -EINVAL;
-	memcpy(line, buf, count);
-	line[count] = '\0';
 	strim(line);
 
 	ret = fan_thermal_profile_apply(line, false);
@@ -1374,7 +1373,7 @@ static ssize_t fan_curve_show(struct device *dev,
 	int i, n = 0;
 
 	mutex_lock(&fan_lock);
-	for (i = 0; i < curve_num_points; i++)
+	for (i = 0; i < curve_num_points && n < PAGE_SIZE; i++)
 		n += scnprintf(buf + n, PAGE_SIZE - n, "%d:%d%s",
 			       curve_temps_c[i], curve_pct[i],
 			       (i < curve_num_points - 1) ? " " : "");
@@ -1382,8 +1381,19 @@ static ssize_t fan_curve_show(struct device *dev,
 
 	if (!n)
 		return sysfs_emit(buf, "(unset)\n");
-	n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
+	if (n < PAGE_SIZE)
+		n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
 	return n;
+}
+
+static bool fan_curve_token_is(const char *s, const char *word)
+{
+	size_t n = strlen(word);
+
+	if (strncmp(s, word, n))
+		return false;
+	return s[n] == '\0' || s[n] == '\n' || s[n] == '\r' ||
+	       s[n] == ' ' || s[n] == '\t';
 }
 
 static ssize_t fan_curve_store(struct device *dev,
@@ -1392,20 +1402,11 @@ static ssize_t fan_curve_store(struct device *dev,
 {
 	int t, p, npt = 0;
 	const char *pbuf = buf;
-	char line[16];
-	size_t len;
 
 	while (*pbuf == ' ' || *pbuf == '\t' || *pbuf == '\n' || *pbuf == '\r')
 		pbuf++;
 
-	len = 0;
-	while (pbuf[len] && pbuf[len] != ' ' && pbuf[len] != '\t' &&
-	       pbuf[len] != '\n' && pbuf[len] != '\r' && len < sizeof(line) - 1)
-		len++;
-	memcpy(line, pbuf, len);
-	line[len] = '\0';
-
-	if (sysfs_streq(line, "default") || sysfs_streq(line, "ec")) {
+	if (fan_curve_token_is(pbuf, "default") || fan_curve_token_is(pbuf, "ec")) {
 		fan_curve_restore_ec(true);
 		return count;
 	}
@@ -1551,10 +1552,9 @@ static ssize_t fan_temp_zone_store(struct device *dev,
 				   const char *buf, size_t count)
 {
 	char line[FAN_TZ_NAME_SZ];
-	size_t len = min(count, sizeof(line) - 1);
 
-	memcpy(line, buf, len);
-	line[len] = '\0';
+	if (strscpy(line, buf, sizeof(line)) < 0)
+		return -EINVAL;
 	strim(line);
 
 #if IS_ENABLED(CONFIG_THERMAL)
@@ -1599,10 +1599,8 @@ static ssize_t power_limits_store(struct device *dev,
 	if (!power_limits_supported)
 		return -ENODEV;
 
-	if (count >= sizeof(line))
+	if (strscpy(line, buf, sizeof(line)) < 0)
 		return -EINVAL;
-	memcpy(line, buf, count);
-	line[count] = '\0';
 	strim(line);
 
 	if (sysfs_streq(line, "default") || sysfs_streq(line, "0 0")) {
