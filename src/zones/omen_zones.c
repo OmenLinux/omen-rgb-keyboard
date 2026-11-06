@@ -38,6 +38,11 @@ module_param(brightness_lock, bool, 0644);
 MODULE_PARM_DESC(brightness_lock,
 		 "Ignore keyboard backlight brightness changes requested through the LED class device, so a desktop cannot dim the keyboard (default 0)");
 
+static bool lighting_on_boot = true;
+module_param(lighting_on_boot, bool, 0644);
+MODULE_PARM_DESC(lighting_on_boot,
+		 "Switch the keyboard backlight on when the driver loads, unless the saved brightness is zero (default 1)");
+
 struct led_classdev omen_kbd_led;
 
 static struct attribute_group zone_attribute_group = {
@@ -114,6 +119,40 @@ void apply_brightness_to_color(struct color_platform *color)
 	color->red = (color->red * global_brightness) / 100;
 	color->green = (color->green * global_brightness) / 100;
 	color->blue = (color->blue * global_brightness) / 100;
+}
+
+int fourzone_set_lighting(bool on)
+{
+	u8 state[4] = { on ? HPWMI_FOURZONE_LIGHTING_ON :
+			      HPWMI_FOURZONE_LIGHTING_OFF, 0, 0, 0 };
+
+	return hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_SET, HPWMI_FOURZONE,
+				    state, sizeof(state), 0);
+}
+
+int fourzone_get_lighting(void)
+{
+	u8 state[4] = {0};
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_GET, HPWMI_FOURZONE,
+				   state, sizeof(state), sizeof(state));
+	if (ret)
+		return ret <= 0 ? ret : -EINVAL;
+
+	return state[0] == HPWMI_FOURZONE_LIGHTING_ON;
+}
+
+void fourzone_lighting_on_boot(void)
+{
+	int ret;
+
+	if (!lighting_on_boot || global_brightness == 0)
+		return;
+
+	ret = fourzone_set_lighting(true);
+	if (ret)
+		pr_warn("Failed to switch the keyboard backlight on: %d\n", ret);
 }
 
 void fourzone_apply_current_colors(void)
@@ -264,6 +303,37 @@ ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
+static ssize_t lighting_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	int ret = fourzone_get_lighting();
+
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t lighting_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	bool on;
+	int ret;
+
+	ret = kstrtobool(buf, &on);
+	if (ret)
+		return ret;
+
+	ret = fourzone_set_lighting(on);
+	if (ret)
+		return ret <= 0 ? ret : -EINVAL;
+
+	return count;
+}
+
+static DEVICE_ATTR(lighting, 0664, lighting_show, lighting_store);
+
 void fourzone_apply_brightness_lock(void)
 {
 	/*
@@ -413,7 +483,7 @@ int fourzone_setup(struct platform_device *dev)
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
-	zone_attrs = kcalloc(ZONE_COUNT + 9, sizeof(struct attribute *),
+	zone_attrs = kcalloc(ZONE_COUNT + 10, sizeof(struct attribute *),
 			     GFP_KERNEL);
 	if (!zone_attrs) {
 		ret = -ENOMEM;
@@ -475,7 +545,8 @@ int fourzone_setup(struct platform_device *dev)
 	zone_attrs[ZONE_COUNT + 5] = &dev_attr_mute_led.attr;
 	zone_attrs[ZONE_COUNT + 6] = &dev_attr_mute_state.attr;
 	zone_attrs[ZONE_COUNT + 7] = &brightness_lock_attr.attr;
-	zone_attrs[ZONE_COUNT + 8] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 8] = &dev_attr_lighting.attr;
+	zone_attrs[ZONE_COUNT + 9] = NULL; /* NULL terminate the array */
 
 	zone_attribute_group.attrs = zone_attrs;
 

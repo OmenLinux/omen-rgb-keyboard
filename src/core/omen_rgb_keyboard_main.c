@@ -96,7 +96,9 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 	} else {
 		fourzone_apply_current_colors();
 	}
-	
+
+	fourzone_lighting_on_boot();
+
 	return 0;
 }
 

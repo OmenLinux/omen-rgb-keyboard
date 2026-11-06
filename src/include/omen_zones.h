@@ -79,6 +79,29 @@ void apply_brightness_to_color(struct color_platform *color);
 void fourzone_apply_brightness_lock(void);
 
 /**
+ * fourzone_set_lighting - Switch the keyboard lighting power on or off
+ * @on: true to switch on, false to switch off
+ *
+ * Returns: 0 on success, error code otherwise
+ */
+int fourzone_set_lighting(bool on);
+
+/**
+ * fourzone_get_lighting - Read the keyboard lighting power state
+ *
+ * Returns: 1 when on, 0 when off, negative error code otherwise
+ */
+int fourzone_get_lighting(void);
+
+/**
+ * fourzone_lighting_on_boot - Apply the lighting_on_boot module parameter
+ *
+ * Switches the keyboard backlight on after the saved state has been applied,
+ * unless lighting_on_boot is clear or the saved brightness is zero.
+ */
+void fourzone_lighting_on_boot(void);
+
+/**
  * fourzone_apply_current_colors - Write the configured colors to the hardware
  *
  * Applies original_colors scaled by the global brightness to every zone.
