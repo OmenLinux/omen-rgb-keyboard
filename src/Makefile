@@ -16,7 +16,7 @@ genbin:
 	echo "X" > hp-wmi_bin.o_shipped
 
 clean:
-	-$(RM) -f *.a *.ko *.o *.mod *.mod.c *.order *.symvers
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 	rm -rf $(BUILD_DIR)/*
 
 .PHONY: clean genbin default build
