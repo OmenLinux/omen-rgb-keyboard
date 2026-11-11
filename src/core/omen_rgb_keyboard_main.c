@@ -80,10 +80,11 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		pr_warn("Failed to setup input device: %d\n", ret);
 	}
 
-	/* Initialize HDA LED control for mute button */
-	ret = omen_hda_led_init();
-	if (ret) {
-		pr_warn("Failed to initialize HDA LED control: %d\n", ret);
+	/* HDA LED control for machines the kernel does not cover (mute_led=1) */
+	if (omen_hda_led_available()) {
+		ret = omen_hda_led_init();
+		if (ret)
+			pr_warn("Failed to initialize HDA LED control: %d\n", ret);
 		/* Non-fatal, continue anyway */
 	}
 	
@@ -169,7 +170,10 @@ static int __init hp_wmi_init(void)
 		return err;
 	}
 	
-	pr_info("Driver loaded successfully (RGB zones, animations, mute LED sync enabled)\n");
+	if (omen_hda_led_available())
+		pr_info("Driver loaded successfully (RGB zones, animations, driver-side mute LED sync enabled)\n");
+	else
+		pr_info("Driver loaded successfully (RGB zones, animations)\n");
 	return 0;
 }
 module_init(hp_wmi_init);

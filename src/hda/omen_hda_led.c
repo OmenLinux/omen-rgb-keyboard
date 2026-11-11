@@ -12,15 +12,29 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/list.h>
 #include <linux/workqueue.h>
+#include <linux/namei.h>
+#include <linux/fs.h>
 #include <sound/core.h>
 #include <sound/hda_codec.h>
 #include <sound/hwdep.h>
 
 #include "omen_hda_led.h"
+
+/*
+ * The in-tree Realtek quirks (see bugzilla.kernel.org #214735) expose
+ * hda::mute for the models they cover and drive the same codec coefficient.
+ * This path exists for the models the kernel does not know yet, and it steps
+ * aside whenever hda::mute is already there.
+ */
+static bool mute_led_enable;
+module_param_named(mute_led, mute_led_enable, bool, 0444);
+MODULE_PARM_DESC(mute_led,
+		 "Drive the mute button LED through HDA coef verbs (default 0); ignored when the kernel already provides hda::mute");
 
 /* HDA codec parameters */
 #define OMEN_HDA_CODEC_NID     0x20    /* Node ID */
@@ -38,10 +52,34 @@ static struct hda_codec *omen_codec = NULL;
 static bool led_auto_control = true; /* Enable automatic LED control based on mute */
 static bool external_mute_state = false;
 static bool use_external_mute = false;
+static bool hda_led_initialized = false;
 static struct delayed_work codec_retry_work;
 static int codec_retry_count = 0;
 #define MAX_CODEC_RETRIES 20
 #define CODEC_RETRY_DELAY_MS 5000  /* 5 seconds */
+
+/**
+ * kernel_mute_led_exists - Check whether the kernel already drives the LED
+ *
+ * The in-tree Realtek fixups register an "hda::mute" LED classdev backed by
+ * the same codec coefficient. When that exists, writing it from here would
+ * only create a second writer.
+ */
+static bool kernel_mute_led_exists(void)
+{
+	struct path path;
+
+	if (kern_path("/sys/class/leds/hda::mute", 0, &path))
+		return false;
+
+	path_put(&path);
+	return true;
+}
+
+bool omen_hda_led_available(void)
+{
+	return mute_led_enable && !kernel_mute_led_exists();
+}
 
 
 /**
@@ -255,7 +293,10 @@ static int omen_hda_led_set_internal(bool on)
 int omen_hda_led_set(bool on)
 {
 	int ret;
-		
+
+	if (!hda_led_initialized)
+		return -ENODEV;
+
 	ret = omen_hda_led_set_internal(on);
 	if (ret == 0) {
 		pr_debug("Mute LED turned %s (manual override)\n", on ? "on" : "off");
@@ -322,7 +363,19 @@ static void codec_retry_work_handler(struct work_struct *work)
  */
 int omen_hda_led_init(void)
 {
+	if (!mute_led_enable) {
+		pr_debug("HDA mute LED control disabled (mute_led=0)\n");
+		return 0;
+	}
+
+	if (kernel_mute_led_exists()) {
+		pr_info("Kernel already drives the mute LED via hda::mute; driver-side HDA mute LED control stays off\n");
+		return 0;
+	}
+
 	pr_debug("Initializing HDA LED control\n");
+
+	hda_led_initialized = true;
 
 	/* omen_hda_led_cleanup() cancels this unconditionally */
 	INIT_DELAYED_WORK(&codec_retry_work, codec_retry_work_handler);
@@ -364,6 +417,11 @@ int omen_hda_led_init(void)
  */
 void omen_hda_led_cleanup(void)
 {
+	if (!hda_led_initialized)
+		return;
+
+	hda_led_initialized = false;
+
 	/* Disable auto control */
 	led_auto_control = false;
 	
@@ -393,6 +451,9 @@ void omen_hda_led_cleanup(void)
 int omen_hda_led_set_mute_state(bool muted)
 {
 	int ret;
+
+	if (!hda_led_initialized)
+		return -ENODEV;
 
 	external_mute_state = muted;
 	use_external_mute = true;
