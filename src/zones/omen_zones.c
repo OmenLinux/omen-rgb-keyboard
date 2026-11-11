@@ -43,6 +43,14 @@ module_param(lighting_on_boot, bool, 0644);
 MODULE_PARM_DESC(lighting_on_boot,
 		 "Switch the keyboard backlight on when the driver loads, unless the saved brightness is zero (default 1)");
 
+/*
+ * Last lighting power state requested from this driver. The EC drops it, and
+ * the zone colours with it, across a suspend, a hibernation or an AC plug
+ * while the machine sleeps. Keeping the request here lets resume and the
+ * Fn-F4 toggle put the keyboard back exactly as the user left it.
+ */
+static bool lighting_enabled = true;
+
 struct led_classdev omen_kbd_led;
 
 static struct attribute_group zone_attribute_group = {
@@ -125,9 +133,14 @@ int fourzone_set_lighting(bool on)
 {
 	u8 state[4] = { on ? HPWMI_FOURZONE_LIGHTING_ON :
 			      HPWMI_FOURZONE_LIGHTING_OFF, 0, 0, 0 };
+	int ret;
 
-	return hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_SET, HPWMI_FOURZONE,
-				    state, sizeof(state), 0);
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_SET, HPWMI_FOURZONE,
+				   state, sizeof(state), 0);
+	if (!ret)
+		lighting_enabled = on;
+
+	return ret;
 }
 
 int fourzone_get_lighting(void)
@@ -145,12 +158,11 @@ int fourzone_get_lighting(void)
 
 void fourzone_lighting_on_boot(void)
 {
+	bool on = lighting_on_boot && global_brightness > 0;
 	int ret;
 
-	if (!lighting_on_boot || global_brightness == 0)
-		return;
-
-	ret = fourzone_set_lighting(true);
+	/* Write the state either way, so the intent is not left half-applied */
+	ret = fourzone_set_lighting(on);
 	if (ret)
 		pr_warn("Failed to switch the keyboard backlight on: %d\n", ret);
 }
@@ -171,6 +183,40 @@ void update_all_zones_with_colors(struct color_platform colors[ZONE_COUNT])
 		apply_brightness_to_color(&zone_data[zone].colors);
 		fourzone_update_led(&zone_data[zone], HPWMI_WRITE);
 	}
+}
+
+void omen_restore_lighting(void)
+{
+	int ret;
+
+	/*
+	 * Nothing else repaints a static configuration, and the EC may have
+	 * dropped the zone colours while the machine slept, so the colours go
+	 * back first. A running animation rewrites every zone on its next tick
+	 * and would be painted over by the static colours here.
+	 */
+	if (!animation_active)
+		fourzone_apply_current_colors();
+
+	ret = fourzone_set_lighting(lighting_enabled);
+	if (ret)
+		pr_warn("Failed to restore keyboard lighting after resume: %d\n",
+			ret);
+}
+
+void omen_capture_lighting(void)
+{
+	int state = fourzone_get_lighting();
+
+	/*
+	 * Fn-F4 never reaches the driver: the EC firmware toggles the lighting
+	 * bit itself and the press is not forwarded to the OS, so reading the
+	 * bit back is the only way to learn what the user left behind. It has
+	 * to happen before the machine sleeps, because the EC drops the bit
+	 * during sleep and a resume-time read would always report "off".
+	 */
+	if (state >= 0)
+		lighting_enabled = state > 0;
 }
 
 static int omen_apply_brightness(unsigned long level)

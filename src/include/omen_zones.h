@@ -114,6 +114,24 @@ void fourzone_apply_current_colors(void);
  */
 void update_all_zones_with_colors(struct color_platform colors[ZONE_COUNT]);
 
+/**
+ * omen_restore_lighting - Re-apply the stored lighting state to the hardware
+ *
+ * The EC drops the zone colours and the lighting power state across a
+ * suspend, a hibernation or an AC plug while the machine sleeps. Called from
+ * the resume path so the keyboard comes back as the user left it.
+ */
+void omen_restore_lighting(void);
+
+/**
+ * omen_capture_lighting - Read the lighting state back from the EC
+ *
+ * Fn-F4 is handled by the EC firmware, so a press never reaches the driver and
+ * the only way to learn about it is to read the bit back. Called before the
+ * machine sleeps so resume can restore what the user actually left behind.
+ */
+void omen_capture_lighting(void);
+
 /* Sysfs attribute callbacks */
 ssize_t zone_show(struct device *dev, struct device_attribute *attr, char *buf);
 ssize_t zone_set(struct device *dev, struct device_attribute *attr,

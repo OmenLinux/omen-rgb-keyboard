@@ -76,4 +76,3 @@ echo "  echo '5' | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animati
 echo "  echo 'FF0000' | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/all"
 echo "  echo '75' | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightness"
 echo ""
-
