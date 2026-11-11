@@ -247,6 +247,7 @@ void omen_capture_lighting(void)
 		lighting_enabled = state > 0;
 }
 
+
 static int omen_apply_brightness(unsigned long level, bool user_request)
 {
 	int ret;
@@ -497,6 +498,7 @@ ssize_t all_set(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
+#ifdef CONFIG_OMEN_HDA_LED
 static ssize_t mute_led_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
@@ -549,6 +551,7 @@ static ssize_t mute_state_set(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR(mute_state, 0664, mute_state_show, mute_state_set);
+#endif /* CONFIG_OMEN_HDA_LED */
 
 int fourzone_setup(struct platform_device *dev)
 {
@@ -617,15 +620,25 @@ int fourzone_setup(struct platform_device *dev)
 	zone_dev_attrs[ZONE_COUNT].store = all_set;
 	zone_attrs[ZONE_COUNT] = &zone_dev_attrs[ZONE_COUNT].attr;
 
+	/*
+	 * The attribute group is walked until the first NULL, so the optional
+	 * mute attrs go last: nothing has to be compacted around them.
+	 */
 	zone_attrs[ZONE_COUNT + 1] = &animation_brightness_attr.attr;
 	zone_attrs[ZONE_COUNT + 2] = &animation_mode_attr.attr;
 	zone_attrs[ZONE_COUNT + 3] = &animation_speed_attr.attr;
 	zone_attrs[ZONE_COUNT + 4] = &gradient_config_attr.attr;
-	zone_attrs[ZONE_COUNT + 5] = &dev_attr_mute_led.attr;
-	zone_attrs[ZONE_COUNT + 6] = &dev_attr_mute_state.attr;
-	zone_attrs[ZONE_COUNT + 7] = &brightness_lock_attr.attr;
-	zone_attrs[ZONE_COUNT + 8] = &dev_attr_lighting.attr;
-	zone_attrs[ZONE_COUNT + 9] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 5] = &brightness_lock_attr.attr;
+	zone_attrs[ZONE_COUNT + 6] = &dev_attr_lighting.attr;
+	zone_attrs[ZONE_COUNT + 7] = NULL;
+
+#ifdef CONFIG_OMEN_HDA_LED
+	if (omen_hda_led_available()) {
+		zone_attrs[ZONE_COUNT + 7] = &dev_attr_mute_led.attr;
+		zone_attrs[ZONE_COUNT + 8] = &dev_attr_mute_state.attr;
+		zone_attrs[ZONE_COUNT + 9] = NULL;
+	}
+#endif
 
 	zone_attribute_group.attrs = zone_attrs;
 

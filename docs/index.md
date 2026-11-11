@@ -47,7 +47,7 @@ sudo dnf install kernel-devel kernel-headers @development-tools dkms alsa-lib-de
 sudo apt install linux-headers-$(uname -r) build-essential libasound2-dev
 ```
 
-**Note**: The ALSA libraries are required for the mute button LED control feature. The driver will still compile without them, but LED sync functionality will be disabled.
+**Note**: The mute button LED is handled by the in-kernel `hda::mute` LED class device, so no ALSA userspace libraries are needed. The driver also carries its own HDA LED path for machines missing from the kernel quirk tables: it is built in by default (`make -C src OMEN_HDA_LED=n` to drop it) and only runs when loaded with `mute_led=1` on a machine where the kernel does not already expose `hda::mute`.
 
 
 > [!IMPORTANT]

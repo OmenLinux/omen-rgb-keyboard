@@ -1,5 +1,11 @@
 obj-m := omen_rgb_keyboard.o
 
+# HDA mute LED support for machines missing from the kernel quirk tables.
+# The code is built in and stays inert unless the module is loaded with
+# mute_led=1 and the kernel does not expose hda::mute. Build with
+# `make OMEN_HDA_LED=n` to drop it from the module entirely.
+OMEN_HDA_LED ?= y
+
 # Include directories
 ccflags-y := -I$(src)/include
 
@@ -10,5 +16,9 @@ omen_rgb_keyboard-y := \
 	zones/omen_zones.o \
 	animations/omen_animations.o \
 	state/omen_state.o \
-	hda/omen_hda_led.o \
 	core/omen_rgb_keyboard_main.o
+
+ifeq ($(OMEN_HDA_LED),y)
+ccflags-y += -DCONFIG_OMEN_HDA_LED
+omen_rgb_keyboard-y += hda/omen_hda_led.o
+endif
