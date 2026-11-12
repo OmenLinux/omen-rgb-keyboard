@@ -557,13 +557,15 @@ After changing, rebuild with `sudo make install`.
 
 ## Lighting After Suspend and Hibernation
 
-The EC drops the zone colours and the lighting bit across suspend, hibernation and an AC plug while the machine sleeps. On wakeup the driver re-sends the stored colours and power state from `.resume`/`.restore`, so the keyboard comes back as the user left it. A keyboard that still comes back dark after this is a bug worth reporting with `dmesg | grep omen_rgb_keyboard` output.
+The EC drops the zone colours and the lighting bit across suspend, hibernation and an AC plug while the machine sleeps. On wakeup the driver re-sends the stored colours and power state from `.resume`/`.restore`, so the keyboard comes back as the user left it.
+
+Desktops fade the backlight to zero before sleeping and do not always raise it again, which would repaint the keyboard black. The driver therefore remembers the last level the keyboard was actually lit at and restores that one when it finds a zero left over; a zero written through `rgb_zones/brightness` counts as a deliberate "dark keyboard" and is kept.
+
+A keyboard that still comes back dark after this is a bug worth reporting with `dmesg | grep omen_rgb_keyboard` output.
 
 ## Fn-F4 Backlight Key
 
 On these models `Fn-F4` is handled entirely by the EC firmware: the lighting is switched on and off before the OS sees anything, and the press is not forwarded as a key event. That is why the key works on the lock screen and inside a session without any keymap, and why no hwdb entry or input handler is shipped for it.
-
-The driver only reads the resulting lighting bit back, before the machine sleeps, so the resume restore brings back the state the user actually left.
 
 ## Troubleshooting
 

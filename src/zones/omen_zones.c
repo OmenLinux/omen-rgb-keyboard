@@ -51,6 +51,16 @@ MODULE_PARM_DESC(lighting_on_boot,
  */
 static bool lighting_enabled = true;
 
+/*
+ * Last level the keyboard was actually lit at. Desktops fade the backlight to
+ * zero before a suspend and do not always raise it again on wakeup, so the
+ * resume restore used to repaint the zones scaled by that zero and left the
+ * keyboard dark. A zero written through rgb_zones/brightness is an explicit
+ * request for a dark keyboard and clears this, so only a desktop-side sleep
+ * dim is undone.
+ */
+static int lit_brightness = 100;
+
 struct led_classdev omen_kbd_led;
 
 static struct attribute_group zone_attribute_group = {
@@ -161,6 +171,9 @@ void fourzone_lighting_on_boot(void)
 	bool on = lighting_on_boot && global_brightness > 0;
 	int ret;
 
+	if (global_brightness > 0)
+		lit_brightness = global_brightness;
+
 	/* Write the state either way, so the intent is not left half-applied */
 	ret = fourzone_set_lighting(on);
 	if (ret)
@@ -190,6 +203,19 @@ void omen_restore_lighting(void)
 	int ret;
 
 	/*
+	 * A desktop may have faded the backlight to zero just before sleeping
+	 * and is not guaranteed to raise it again. Painting the zones at that
+	 * level is what left the keyboard lit-but-black after wakeup, so put
+	 * back the last level it was actually lit at, unless the light itself
+	 * was switched off or the zero came from an explicit request.
+	 */
+	if (lighting_enabled && global_brightness == 0 && lit_brightness > 0) {
+		pr_info("Keyboard brightness was left at 0, restoring %d\n",
+			lit_brightness);
+		global_brightness = lit_brightness;
+	}
+
+	/*
 	 * Nothing else repaints a static configuration, and the EC may have
 	 * dropped the zone colours while the machine slept, so the colours go
 	 * back first. A running animation rewrites every zone on its next tick
@@ -202,6 +228,8 @@ void omen_restore_lighting(void)
 	if (ret)
 		pr_warn("Failed to restore keyboard lighting after resume: %d\n",
 			ret);
+
+	save_animation_state();
 }
 
 void omen_capture_lighting(void)
@@ -219,7 +247,7 @@ void omen_capture_lighting(void)
 		lighting_enabled = state > 0;
 }
 
-static int omen_apply_brightness(unsigned long level)
+static int omen_apply_brightness(unsigned long level, bool user_request)
 {
 	int ret;
 
@@ -227,6 +255,11 @@ static int omen_apply_brightness(unsigned long level)
 		level = 100;
 
 	global_brightness = level;
+
+	if (level > 0)
+		lit_brightness = level;
+	else if (user_request)
+		lit_brightness = 0;
 
 	/*
 	 * While an animation is running it owns the zone colours and rewrites
@@ -274,7 +307,7 @@ int omen_kbd_brightness_set(struct led_classdev *led_cdev,
 	if (brightness_lock)
 		return 0;
 
-	return omen_apply_brightness(value);
+	return omen_apply_brightness(value, false);
 }
 
 ssize_t zone_show(struct device *dev, struct device_attribute *attr,
@@ -342,7 +375,7 @@ ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
 	if (kstrtoul(buf, 10, &level))
 		return -EINVAL;
 
-	ret = omen_apply_brightness(level);
+	ret = omen_apply_brightness(level, true);
 	if (ret)
 		return ret;
 
@@ -390,7 +423,7 @@ void fourzone_apply_brightness_lock(void)
 	 * take it down deliberately if that is really wanted.
 	 */
 	if (brightness_lock && global_brightness == 0)
-		omen_apply_brightness(100);
+		omen_apply_brightness(100, false);
 }
 
 static ssize_t brightness_lock_show(struct device *dev,
