@@ -42,6 +42,8 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - Brightness Control - Adjust brightness from 0-100%
 - **12 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
+- **Fn-F4 Backlight Key** - Handled by the EC firmware on these models, so it works before and after login without any keymap
+- **Lighting Survives Resume** - Zone colours and the lighting state are re-applied after suspend and hibernation, where the EC otherwise drops them
 - **Mute Button LED Control** - Automatic LED sync with system mute state via HDA codec
 - **Fan control** - EC-automatic by default, optional CPU and GPU curves (points and the on/off switch persist across reboot), hardware max when a curve asks for it, hysteresis, thermal presets (silent / normal / performance), CPU PL1/PL2, and PPD via `platform_profile` (see below)
 - Real-time Updates - Changes apply immediately
@@ -393,6 +395,31 @@ Enabling the lock while the backlight happens to be off raises it to full
 first, because a locked level of zero could not be undone from the desktop:
 the lock is exactly what stops the desktop touching the backlight.
 
+### Keyboard Backlight On Boot
+
+The EC keeps the keyboard lighting power separate from the zone colours, so
+writing colours alone does not light a keyboard whose backlight was left off.
+The driver switches that power on when it loads, as long as the saved
+brightness is not zero.
+
+`lighting` reads the hardware state and switches it directly:
+
+```bash
+# Read 1 (on) or 0 (off)
+cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+
+# Switch the backlight on / off
+echo 1 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+echo 0 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+```
+
+To keep the keyboard dark at boot, disable the automatic switch-on in
+`/etc/modprobe.d/omen_rgb_keyboard.conf`:
+
+```
+options omen_rgb_keyboard lighting_on_boot=0
+```
+
 ### Animation Modes
 
 The driver supports 12 different animation modes:
@@ -527,6 +554,18 @@ static const struct key_entry hp_wmi_keymap[] = {
 ```
 
 After changing, rebuild with `sudo make install`.
+
+## Lighting After Suspend and Hibernation
+
+The EC drops the zone colours and the lighting bit across suspend, hibernation and an AC plug while the machine sleeps. On wakeup the driver re-sends the stored colours and power state from `.resume`/`.restore`, so the keyboard comes back as the user left it.
+
+Desktops fade the backlight to zero before sleeping and do not always raise it again, which would repaint the keyboard black. The driver therefore remembers the last level the keyboard was actually lit at and restores that one when it finds a zero left over; a zero written through `rgb_zones/brightness` counts as a deliberate "dark keyboard" and is kept.
+
+A keyboard that still comes back dark after this is a bug worth reporting with `dmesg | grep omen_rgb_keyboard` output.
+
+## Fn-F4 Backlight Key
+
+On these models `Fn-F4` is handled entirely by the EC firmware: the lighting is switched on and off before the OS sees anything, and the press is not forwarded as a key event. That is why the key works on the lock screen and inside a session without any keymap, and why no hwdb entry or input handler is shipped for it.
 
 ## Troubleshooting
 

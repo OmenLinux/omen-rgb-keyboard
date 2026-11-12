@@ -254,4 +254,3 @@ void hp_wmi_input_cleanup(void)
 		pr_info("HP WMI input device unregistered\n");
 	}
 }
-
