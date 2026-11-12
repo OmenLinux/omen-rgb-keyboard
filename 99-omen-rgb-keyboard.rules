@@ -16,11 +16,10 @@ ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone03", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/all", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/lighting", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_mode", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
-  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
-  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness_lock", \
   RUN+="/bin/chgrp input /sys$devpath/fan/cpu_fan_rpm", \
   RUN+="/bin/chgrp input /sys$devpath/fan/gpu_fan_rpm", \
@@ -41,6 +40,19 @@ ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
   RUN+="/bin/chmod g+w /sys$devpath/fan/gpu_fan_temp_zone", \
   RUN+="/bin/chmod g+w /sys$devpath/fan/power_limits"
 
+# Mute LED attrs only exist when the driver was built with
+# OMEN_HDA_LED=y and loaded with mute_led=1, so they are handled separately
+# and guarded by TEST= to keep udev from logging failed chgrp calls.
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
+  TEST=="/sys$devpath/rgb_zones/mute_led", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state"
+
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}=="omen-rgb-keyboard", \
+  TEST=="/sys$devpath/rgb_zones/mute_led", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state"
+
 # Built-in driver or synchronous probe: device may uevent with DRIVER already set.
 ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}=="omen-rgb-keyboard", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone00", \
@@ -49,11 +61,10 @@ ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}==
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone03", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/all", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/lighting", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_mode", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
-  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
-  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_state", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness_lock", \
   RUN+="/bin/chgrp input /sys$devpath/fan/cpu_fan_rpm", \
   RUN+="/bin/chgrp input /sys$devpath/fan/gpu_fan_rpm", \

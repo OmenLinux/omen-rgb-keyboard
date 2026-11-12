@@ -42,7 +42,9 @@ Inspired by the original [hp-omen-linux-module](https://github.com/pelrun/hp-ome
 - Brightness Control - Adjust brightness from 0-100%
 - **12 Animation Modes** - Complete animation system with CPU-efficient timer-based updates
 - **Omen Key Support** - The Omen key is mapped to KEY_MSDOS for custom shortcuts
-- **Mute Button LED Control** - Automatic LED sync with system mute state via HDA codec
+- **Fn-F4 Backlight Key** - Handled by the EC firmware on these models, so it works before and after login without any keymap
+- **Lighting Survives Resume** - Zone colours and the lighting state are re-applied after suspend and hibernation, where the EC otherwise drops them
+- **Mute Button LED Control** - Driven by the kernel's `hda::mute` LED, with a built-in driver path for models missing from the kernel quirk table
 - **Fan control** - EC-automatic by default, optional CPU and GPU curves (points and the on/off switch persist across reboot), hardware max when a curve asks for it, hysteresis, thermal presets (silent / normal / performance), CPU PL1/PL2, and PPD via `platform_profile` (see below)
 - Real-time Updates - Changes apply immediately
 - Hex Color Format - Use standard RGB hex values
@@ -77,7 +79,7 @@ sudo dnf install kernel-devel kernel-headers @development-tools dkms alsa-lib-de
 sudo apt install linux-headers-$(uname -r) build-essential libasound2t64
 ```
 
-**Note**: The ALSA libraries are required for the mute button LED control feature. The driver will still compile without them, but LED sync functionality will be disabled.
+**Note**: No userspace ALSA libraries are needed — the mute LED is handled in the kernel. The driver's HDA LED path is compiled out unless built with `OMEN_HDA_LED=y` (see below).
 
 > [!IMPORTANT]
 > We've noticed issues when using this driver at the same time with *`hp_wmi`* loaded. Since we implement the same things but in an improved way, there's no reason to keep both fighting each other for WMI events (which **will** cause issues)
@@ -195,45 +197,100 @@ echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightness
 
 #### Mute Button LED Control
 
-The mute button LED is **automatically synchronized** with your system's mute state (polls every 200ms). When you mute audio, the LED turns on; when unmuted, it turns off.
+The mute button LED is usually driven by the **kernel**: the in-tree Realtek fixups 
+(kernel bugzilla #214735) register an `hda::mute` LED class device backed by the 
+codec coefficient and let `snd_ctl_led` follow the
+mixer switch.
 
-**For HDA/ALSA audio devices:**
-The driver automatically monitors ALSA controls (Master, Speaker, Headphone, PCM) and syncs the LED.
-
-**For PipeWire/Bluetooth devices:**
-If you're using PipeWire or Bluetooth headphones, the mute monitor service is installed and enabled automatically.
-
-**Check service status:**
 ```bash
-# Check if service is running
-systemctl --user status omen-mute-monitor.service
+# Current state and binding
+cat /sys/class/leds/hda::mute/brightness
+cat /sys/class/leds/hda::mute/trigger      # should show [audio-mute]
 
-# View service logs
-journalctl --user -u omen-mute-monitor.service -f
-
-# Check if service is enabled
-systemctl --user is-enabled omen-mute-monitor.service
-
-# Restart service if needed
-systemctl --user restart omen-mute-monitor.service
+# Which controls the LED follows
+cat /sys/class/sound/ctl-led/speaker/mode
+cat /sys/class/sound/ctl-led/mic/mode
 ```
 
-The service monitors PipeWire mute state using `wpctl` and notifies the kernel driver via sysfs. It runs as your user (for PipeWire access) and uses sudo only for sysfs writes if needed.
+Because the LED is bound to the internal codec, it follows the internal
+speaker/headphone mute and stays put when the default sink is Bluetooth, USB or
+HDMI. That is the kernel's behaviour, not a driver bug.
 
-**Manual Control:**
+**When the kernel does not cover your model.** Some newer OMEN boards are
+missing from the kernel's Realtek quirk table, so no `hda::mute` appears and the
+indicator stays dark. The driver carries its own HDA LED code for exactly these
+machines. It is built in by default and activates only when both conditions
+hold: the module was loaded with `mute_led=1`, and the kernel does not expose
+`hda::mute` yet.
+
+`install.sh` handles this automatically: if `/sys/class/leds/hda::mute` is
+missing, it adds `mute_led=1` to `/etc/modprobe.d/omen_rgb_keyboard.conf`, reloads
+the module and installs the monitor. If the kernel LED exists, it leaves
+everything alone. `OMEN_INSTALL_MUTE_MONITOR=0` / `=1` override the decision.
+
+Manual setup:
+
 ```bash
-# Manually turn mute button LED on (disables auto-sync)
-echo "1" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
+# Drop the code from the module entirely (not needed on most machines)
+make -C src OMEN_HDA_LED=n
 
-# Manually turn mute button LED off
-echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
-
-# Set mute state from userspace (for PipeWire/Bluetooth)
-echo "1" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state  # Muted
-echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state  # Unmuted
+# Load with the driver-side path enabled
+sudo modprobe omen_rgb_keyboard mute_led=1
 ```
 
-**Note**: Manual control via `mute_led` disables automatic synchronization until the driver is reloaded.
+`mute_led` can also go into `/etc/modprobe.d/omen_rgb_keyboard.conf` or the
+kernel command line (`omen_rgb_keyboard.mute_led=1`). It is ignored whenever
+the kernel already exposes `hda::mute`, because two writers would race on the
+same codec coefficient.
+
+The driver does not poll ALSA, so the path needs the userspace monitor to follow
+the sound server. With it active, these files exist:
+
+```bash
+# Turn the LED on/off directly
+echo 1 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
+echo 0 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
+
+# Push state from userspace (PipeWire/Bluetooth)
+echo 1 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state
+echo 0 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state
+```
+
+The `omen-mute-monitor` user service polls `wpctl` every 100 ms and writes
+`mute_state`; `install.sh` installs and enables it unless the kernel LED is
+present or `OMEN_INSTALL_MUTE_MONITOR=0` is set.
+
+**If `hda::mute` does not exist.** That means your subsystem ID is missing from
+the kernel's Realtek quirk table, so nothing in the kernel drives the LED: the
+mute key and software mute work, the indicator does not. This is what
+[issue #3](https://github.com/OmenLinux/omen-rgb-keyboard/issues/3) reported on
+an OMEN 16-wf0xxx (`103c:8bab`, ALC245 behind SOF).
+
+Check what the kernel sees:
+
+```bash
+ls /sys/class/leds/ | grep hda          # empty => no kernel LED, driver path needed
+cat /proc/asound/cards                  # codec card, e.g. 1 [sof-hda-dsp]
+grep -i codec /proc/asound/card*/codec* # Codec: Realtek ALC245
+cat /sys/class/dmi/id/board_name        # subsystem id, e.g. 8787
+```
+
+If the codec LED verb works, the hardware is fine and only the quirk is missing.
+For ALC245 that is index `0x0B` on NID `0x20` (card/device from the line above):
+
+```bash
+sudo hda-verb /dev/snd/hwC1D0 0x20 0x500 0x0B
+sudo hda-verb /dev/snd/hwC1D0 0x20 0x400 0x7778   # LED on
+sudo hda-verb /dev/snd/hwC1D0 0x20 0x400 0x7774   # LED off
+```
+
+If the LED reacts, the long-term fix is a one-line
+`SND_PCI_QUIRK(0x103c, 0x<board>, ..., ALC245_FIXUP_HP_MUTE_LED_COEFBIT)` in
+`sound/pci/hda/patch_realtek.c`, the same way
+[bug #214735](https://bugzilla.kernel.org/show_bug.cgi?id=214735) was fixed for
+other models — send it upstream. Until then the driver path above covers it, and
+it steps aside automatically once the kernel quirk lands.
+
 
 #### Reading Current Values
 ```bash
@@ -393,6 +450,31 @@ Enabling the lock while the backlight happens to be off raises it to full
 first, because a locked level of zero could not be undone from the desktop:
 the lock is exactly what stops the desktop touching the backlight.
 
+### Keyboard Backlight On Boot
+
+The EC keeps the keyboard lighting power separate from the zone colours, so
+writing colours alone does not light a keyboard whose backlight was left off.
+The driver switches that power on when it loads, as long as the saved
+brightness is not zero.
+
+`lighting` reads the hardware state and switches it directly:
+
+```bash
+# Read 1 (on) or 0 (off)
+cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+
+# Switch the backlight on / off
+echo 1 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+echo 0 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+```
+
+To keep the keyboard dark at boot, disable the automatic switch-on in
+`/etc/modprobe.d/omen_rgb_keyboard.conf`:
+
+```
+options omen_rgb_keyboard lighting_on_boot=0
+```
+
 ### Animation Modes
 
 The driver supports 12 different animation modes:
@@ -527,6 +609,18 @@ static const struct key_entry hp_wmi_keymap[] = {
 ```
 
 After changing, rebuild with `sudo make install`.
+
+## Lighting After Suspend and Hibernation
+
+The EC drops the zone colours and the lighting bit across suspend, hibernation and an AC plug while the machine sleeps. On wakeup the driver re-sends the stored colours and power state from `.resume`/`.restore`, so the keyboard comes back as the user left it.
+
+Desktops fade the backlight to zero before sleeping and do not always raise it again, which would repaint the keyboard black. The driver therefore remembers the last level the keyboard was actually lit at and restores that one when it finds a zero left over; a zero written through `rgb_zones/brightness` counts as a deliberate "dark keyboard" and is kept.
+
+A keyboard that still comes back dark after this is a bug worth reporting with `dmesg | grep omen_rgb_keyboard` output.
+
+## Fn-F4 Backlight Key
+
+On these models `Fn-F4` is handled entirely by the EC firmware: the lighting is switched on and off before the OS sees anything, and the press is not forwarded as a key event. That is why the key works on the lock screen and inside a session without any keymap, and why no hwdb entry or input handler is shipped for it.
 
 ## Troubleshooting
 

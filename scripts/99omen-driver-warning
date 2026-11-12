@@ -1,0 +1,3 @@
+// Warn before package operations if the out-of-tree HP OMEN driver is installed.
+APT::Update::Pre-Invoke { "[ -x /usr/local/sbin/omen-driver-warning ] && /usr/local/sbin/omen-driver-warning --short || true"; };
+DPkg::Pre-Invoke { "[ -x /usr/local/sbin/omen-driver-warning ] && /usr/local/sbin/omen-driver-warning || true"; };

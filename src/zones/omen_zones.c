@@ -38,6 +38,29 @@ module_param(brightness_lock, bool, 0644);
 MODULE_PARM_DESC(brightness_lock,
 		 "Ignore keyboard backlight brightness changes requested through the LED class device, so a desktop cannot dim the keyboard (default 0)");
 
+static bool lighting_on_boot = true;
+module_param(lighting_on_boot, bool, 0644);
+MODULE_PARM_DESC(lighting_on_boot,
+		 "Switch the keyboard backlight on when the driver loads, unless the saved brightness is zero (default 1)");
+
+/*
+ * Last lighting power state requested from this driver. The EC drops it, and
+ * the zone colours with it, across a suspend, a hibernation or an AC plug
+ * while the machine sleeps. Keeping the request here lets resume and the
+ * Fn-F4 toggle put the keyboard back exactly as the user left it.
+ */
+static bool lighting_enabled = true;
+
+/*
+ * Last level the keyboard was actually lit at. Desktops fade the backlight to
+ * zero before a suspend and do not always raise it again on wakeup, so the
+ * resume restore used to repaint the zones scaled by that zero and left the
+ * keyboard dark. A zero written through rgb_zones/brightness is an explicit
+ * request for a dark keyboard and clears this, so only a desktop-side sleep
+ * dim is undone.
+ */
+static int lit_brightness = 100;
+
 struct led_classdev omen_kbd_led;
 
 static struct attribute_group zone_attribute_group = {
@@ -116,6 +139,47 @@ void apply_brightness_to_color(struct color_platform *color)
 	color->blue = (color->blue * global_brightness) / 100;
 }
 
+int fourzone_set_lighting(bool on)
+{
+	u8 state[4] = { on ? HPWMI_FOURZONE_LIGHTING_ON :
+			      HPWMI_FOURZONE_LIGHTING_OFF, 0, 0, 0 };
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_SET, HPWMI_FOURZONE,
+				   state, sizeof(state), 0);
+	if (!ret)
+		lighting_enabled = on;
+
+	return ret;
+}
+
+int fourzone_get_lighting(void)
+{
+	u8 state[4] = {0};
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_FOURZONE_BRIGHT_GET, HPWMI_FOURZONE,
+				   state, sizeof(state), sizeof(state));
+	if (ret)
+		return ret <= 0 ? ret : -EINVAL;
+
+	return state[0] == HPWMI_FOURZONE_LIGHTING_ON;
+}
+
+void fourzone_lighting_on_boot(void)
+{
+	bool on = lighting_on_boot && global_brightness > 0;
+	int ret;
+
+	if (global_brightness > 0)
+		lit_brightness = global_brightness;
+
+	/* Write the state either way, so the intent is not left half-applied */
+	ret = fourzone_set_lighting(on);
+	if (ret)
+		pr_warn("Failed to switch the keyboard backlight on: %d\n", ret);
+}
+
 void fourzone_apply_current_colors(void)
 {
 	for (u8 zone = 0; zone < ZONE_COUNT; zone++) {
@@ -134,7 +198,57 @@ void update_all_zones_with_colors(struct color_platform colors[ZONE_COUNT])
 	}
 }
 
-static int omen_apply_brightness(unsigned long level)
+void omen_restore_lighting(void)
+{
+	int ret;
+
+	/*
+	 * A desktop may have faded the backlight to zero just before sleeping
+	 * and is not guaranteed to raise it again. Painting the zones at that
+	 * level is what left the keyboard lit-but-black after wakeup, so put
+	 * back the last level it was actually lit at, unless the light itself
+	 * was switched off or the zero came from an explicit request.
+	 */
+	if (lighting_enabled && global_brightness == 0 && lit_brightness > 0) {
+		pr_info("Keyboard brightness was left at 0, restoring %d\n",
+			lit_brightness);
+		global_brightness = lit_brightness;
+	}
+
+	/*
+	 * Nothing else repaints a static configuration, and the EC may have
+	 * dropped the zone colours while the machine slept, so the colours go
+	 * back first. A running animation rewrites every zone on its next tick
+	 * and would be painted over by the static colours here.
+	 */
+	if (!animation_active)
+		fourzone_apply_current_colors();
+
+	ret = fourzone_set_lighting(lighting_enabled);
+	if (ret)
+		pr_warn("Failed to restore keyboard lighting after resume: %d\n",
+			ret);
+
+	save_animation_state();
+}
+
+void omen_capture_lighting(void)
+{
+	int state = fourzone_get_lighting();
+
+	/*
+	 * Fn-F4 never reaches the driver: the EC firmware toggles the lighting
+	 * bit itself and the press is not forwarded to the OS, so reading the
+	 * bit back is the only way to learn what the user left behind. It has
+	 * to happen before the machine sleeps, because the EC drops the bit
+	 * during sleep and a resume-time read would always report "off".
+	 */
+	if (state >= 0)
+		lighting_enabled = state > 0;
+}
+
+
+static int omen_apply_brightness(unsigned long level, bool user_request)
 {
 	int ret;
 
@@ -142,6 +256,11 @@ static int omen_apply_brightness(unsigned long level)
 		level = 100;
 
 	global_brightness = level;
+
+	if (level > 0)
+		lit_brightness = level;
+	else if (user_request)
+		lit_brightness = 0;
 
 	/*
 	 * While an animation is running it owns the zone colours and rewrites
@@ -189,7 +308,7 @@ int omen_kbd_brightness_set(struct led_classdev *led_cdev,
 	if (brightness_lock)
 		return 0;
 
-	return omen_apply_brightness(value);
+	return omen_apply_brightness(value, false);
 }
 
 ssize_t zone_show(struct device *dev, struct device_attribute *attr,
@@ -257,12 +376,43 @@ ssize_t brightness_set(struct device *dev, struct device_attribute *attr,
 	if (kstrtoul(buf, 10, &level))
 		return -EINVAL;
 
-	ret = omen_apply_brightness(level);
+	ret = omen_apply_brightness(level, true);
 	if (ret)
 		return ret;
 
 	return count;
 }
+
+static ssize_t lighting_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	int ret = fourzone_get_lighting();
+
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t lighting_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	bool on;
+	int ret;
+
+	ret = kstrtobool(buf, &on);
+	if (ret)
+		return ret;
+
+	ret = fourzone_set_lighting(on);
+	if (ret)
+		return ret <= 0 ? ret : -EINVAL;
+
+	return count;
+}
+
+static DEVICE_ATTR(lighting, 0664, lighting_show, lighting_store);
 
 void fourzone_apply_brightness_lock(void)
 {
@@ -274,7 +424,7 @@ void fourzone_apply_brightness_lock(void)
 	 * take it down deliberately if that is really wanted.
 	 */
 	if (brightness_lock && global_brightness == 0)
-		omen_apply_brightness(100);
+		omen_apply_brightness(100, false);
 }
 
 static ssize_t brightness_lock_show(struct device *dev,
@@ -348,6 +498,7 @@ ssize_t all_set(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
+#ifdef CONFIG_OMEN_HDA_LED
 static ssize_t mute_led_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
@@ -400,6 +551,7 @@ static ssize_t mute_state_set(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR(mute_state, 0664, mute_state_show, mute_state_set);
+#endif /* CONFIG_OMEN_HDA_LED */
 
 int fourzone_setup(struct platform_device *dev)
 {
@@ -413,7 +565,7 @@ int fourzone_setup(struct platform_device *dev)
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
-	zone_attrs = kcalloc(ZONE_COUNT + 9, sizeof(struct attribute *),
+	zone_attrs = kcalloc(ZONE_COUNT + 10, sizeof(struct attribute *),
 			     GFP_KERNEL);
 	if (!zone_attrs) {
 		ret = -ENOMEM;
@@ -468,14 +620,25 @@ int fourzone_setup(struct platform_device *dev)
 	zone_dev_attrs[ZONE_COUNT].store = all_set;
 	zone_attrs[ZONE_COUNT] = &zone_dev_attrs[ZONE_COUNT].attr;
 
+	/*
+	 * The attribute group is walked until the first NULL, so the optional
+	 * mute attrs go last: nothing has to be compacted around them.
+	 */
 	zone_attrs[ZONE_COUNT + 1] = &animation_brightness_attr.attr;
 	zone_attrs[ZONE_COUNT + 2] = &animation_mode_attr.attr;
 	zone_attrs[ZONE_COUNT + 3] = &animation_speed_attr.attr;
 	zone_attrs[ZONE_COUNT + 4] = &gradient_config_attr.attr;
-	zone_attrs[ZONE_COUNT + 5] = &dev_attr_mute_led.attr;
-	zone_attrs[ZONE_COUNT + 6] = &dev_attr_mute_state.attr;
-	zone_attrs[ZONE_COUNT + 7] = &brightness_lock_attr.attr;
-	zone_attrs[ZONE_COUNT + 8] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 5] = &brightness_lock_attr.attr;
+	zone_attrs[ZONE_COUNT + 6] = &dev_attr_lighting.attr;
+	zone_attrs[ZONE_COUNT + 7] = NULL;
+
+#ifdef CONFIG_OMEN_HDA_LED
+	if (omen_hda_led_available()) {
+		zone_attrs[ZONE_COUNT + 7] = &dev_attr_mute_led.attr;
+		zone_attrs[ZONE_COUNT + 8] = &dev_attr_mute_state.attr;
+		zone_attrs[ZONE_COUNT + 9] = NULL;
+	}
+#endif
 
 	zone_attribute_group.attrs = zone_attrs;
 

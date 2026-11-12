@@ -47,7 +47,7 @@ sudo dnf install kernel-devel kernel-headers @development-tools dkms alsa-lib-de
 sudo apt install linux-headers-$(uname -r) build-essential libasound2-dev
 ```
 
-**Note**: The ALSA libraries are required for the mute button LED control feature. The driver will still compile without them, but LED sync functionality will be disabled.
+**Note**: The mute button LED is handled by the in-kernel `hda::mute` LED class device, so no ALSA userspace libraries are needed. The driver also carries its own HDA LED path for machines missing from the kernel quirk tables: it is built in by default (`make -C src OMEN_HDA_LED=n` to drop it) and only runs when loaded with `mute_led=1` on a machine where the kernel does not already expose `hda::mute`.
 
 
 > [!IMPORTANT]
@@ -227,6 +227,31 @@ echo 80 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightness
 Enabling the lock while the backlight happens to be off raises it to full
 first, because a locked level of zero could not be undone from the desktop:
 the lock is exactly what stops the desktop touching the backlight.
+
+### Keyboard Backlight On Boot
+
+The EC keeps the keyboard lighting power separate from the zone colours, so
+writing colours alone does not light a keyboard whose backlight was left off.
+The driver switches that power on when it loads, as long as the saved
+brightness is not zero.
+
+`lighting` reads the hardware state and switches it directly:
+
+```bash
+# Read 1 (on) or 0 (off)
+cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+
+# Switch the backlight on / off
+echo 1 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+echo 0 | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/lighting
+```
+
+To keep the keyboard dark at boot, disable the automatic switch-on in
+`/etc/modprobe.d/omen_rgb_keyboard.conf`:
+
+```
+options omen_rgb_keyboard lighting_on_boot=0
+```
 
 ### Animation Modes
 

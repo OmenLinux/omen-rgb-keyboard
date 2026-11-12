@@ -12,6 +12,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/wmi.h>
+#include <linux/pm.h>
 #include <generated/utsrelease.h>
 
 #include "omen_rgb_keyboard.h"
@@ -78,11 +79,12 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 	if (ret) {
 		pr_warn("Failed to setup input device: %d\n", ret);
 	}
-	
-	/* Initialize HDA LED control for mute button */
-	ret = omen_hda_led_init();
-	if (ret) {
-		pr_warn("Failed to initialize HDA LED control: %d\n", ret);
+
+	/* HDA LED control for machines the kernel does not cover (mute_led=1) */
+	if (omen_hda_led_available()) {
+		ret = omen_hda_led_init();
+		if (ret)
+			pr_warn("Failed to initialize HDA LED control: %d\n", ret);
 		/* Non-fatal, continue anyway */
 	}
 	
@@ -96,13 +98,47 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 	} else {
 		fourzone_apply_current_colors();
 	}
-	
+
+	fourzone_lighting_on_boot();
+
 	return 0;
 }
+
+/*
+ * The EC forgets the zone colours and the lighting power state across S3, S4
+ * and an AC plug while the machine sleeps, while this driver keeps both in
+ * memory. Without a resume path the keyboard came back dark and only a manual
+ * write to rgb_zones brought it back. .restore covers a hibernation image,
+ * .resume the ordinary suspend-to-RAM wakeup.
+ *
+ * The lighting bit is captured on the way out, not read back on the way in:
+ * Fn-F4 is handled by the EC firmware, so the bit is the only record of what
+ * the user chose, and it is gone by the time the machine wakes up.
+ */
+static int omen_rgb_suspend(struct device *dev)
+{
+	omen_capture_lighting();
+	return 0;
+}
+
+static int omen_rgb_resume(struct device *dev)
+{
+	pr_info("Restoring keyboard lighting after system resume\n");
+	omen_restore_lighting();
+	return 0;
+}
+
+static const struct dev_pm_ops omen_rgb_pm_ops = {
+	.suspend = omen_rgb_suspend,
+	.poweroff = omen_rgb_suspend,
+	.resume = omen_rgb_resume,
+	.restore = omen_rgb_resume,
+};
 
 static struct platform_driver hp_wmi_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.pm = &omen_rgb_pm_ops,
 	},
 	.remove = NULL,
 };
@@ -134,7 +170,10 @@ static int __init hp_wmi_init(void)
 		return err;
 	}
 	
-	pr_info("Driver loaded successfully (RGB zones, animations, mute LED sync enabled)\n");
+	if (omen_hda_led_available())
+		pr_info("Driver loaded successfully (RGB zones, animations, driver-side mute LED sync enabled)\n");
+	else
+		pr_info("Driver loaded successfully (RGB zones, animations)\n");
 	return 0;
 }
 module_init(hp_wmi_init);
