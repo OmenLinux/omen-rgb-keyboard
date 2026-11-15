@@ -310,7 +310,7 @@ cat /sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone01
 
 ### Fan control (`/sys/devices/platform/omen-rgb-keyboard/fan/`)
 
-Requires the same HP WMI GUID as RGB; **blacklist `hp_wmi`** if both would load (see above). Custom fan curves need Victus-S WMI, a valid BIOS fan table, and **`CONFIG_THERMAL`** so a thermal zone can be read. **`max_fan` works on all supported fan interfaces.**
+Requires the same HP WMI GUID as RGB; **blacklist `hp_wmi`** if both would load (see above). Custom fan curves need Victus-S WMI, a valid BIOS fan table, and **`CONFIG_THERMAL`** so a thermal zone can be read. **`max_fan` works on all supported fan interfaces.** On boards that only expose classic WMI, writing custom points to `fan_curve` or `gpu_fan_curve`, and `fan_curve_enable=1`, fail with **`EOPNOTSUPP`**; `default`/`ec` (and `cpu`/`default` for the GPU curve) still work and remain the way to clear a saved curve.
 
 By default the **EC owns the fans** (automatic). `fan_curve` shows the reference table for the active thermal preset until you save your own points. Writing `fan_curve` turns the custom-speed switch on and overrides the EC. The points and that switch are stored in `/var/lib/omen-rgb-keyboard/fan_state` and come back the same way after reboot. With the switch off, the points stay saved and the EC runs the fans.
 
@@ -321,13 +321,13 @@ By default the **EC owns the fans** (automatic). `fan_curve` shows the reference
 | `max_fan` | `0` / `1` — max fans off/on (always available). Manual `1` is sticky until you write `0` |
 | `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset). Also applies GPU CTGP/PPAB and, on supported boards (see below), re-actualizes PL1/PL2 defaults. Leaves a saved custom curve and the custom-speed switch alone. With no saved custom, the built-in curve for that preset is shown and applied |
 | `power_limits` | CPU PL1/PL2 in watts (`PL1 PL2`), or `default` / `0 0` to restore BIOS defaults (supported boards only; elsewhere this returns `EOPNOTSUPP`). PL2 must be ≥ PL1. Read shows last written values (firmware has no get) |
-| `fan_curve` | CPU curve. Read points as `temp:percent`. Write pairs to save a custom curve and turn the switch on. Write `default` or `ec` to return **both** fans to the EC (points kept, switch off). Until a GPU curve is set, this curve also drives the GPU fan |
-| `gpu_fan_curve` | GPU curve, same format. Saving one does not turn the switch on by itself. Write `cpu` or `default` to follow `fan_curve` again. Read shows `(cpu)` while it is following |
-| `fan_curve_enable` | `0` returns both fans to the EC and keeps the saved points. `1` drives the saved CPU curve, and the GPU curve too if one is saved. This switch is restored after reboot |
+| `fan_curve` | CPU curve. Read points as `temp:percent`. Write pairs to save a custom curve and turn the switch on (returns `EOPNOTSUPP` where curves are not supported). Write `default` or `ec` to return **both** fans to the EC (points kept, switch off). Until a GPU curve is set, this curve also drives the GPU fan |
+| `gpu_fan_curve` | GPU curve, same format. Saving one does not turn the switch on by itself (returns `EOPNOTSUPP` where curves are not supported). Write `cpu` or `default` to follow `fan_curve` again. Read shows `(cpu)` while it is following |
+| `fan_curve_enable` | `0` returns both fans to the EC and keeps the saved points. `1` drives the saved CPU curve, and the GPU curve too if one is saved; on interfaces without curve support it fails with `EOPNOTSUPP`. This switch is restored after reboot |
 | `fan_temp_zone` | Thermal zone for the CPU curve (e.g. `x86_pkg_temp`). If unset, the driver tries common zone names |
 | `gpu_fan_temp_zone` | Thermal zone for the GPU curve. Empty means the CPU zone, including when the laptop has no separate GPU sensor |
 
-**Hysteresis:** while a curve is applied, fan percent uses a 3°C band so speeds do not chatter around a setpoint. WMI speed is only rewritten when the mapped speed byte changes.
+**Hysteresis:** while a curve is applied, fan percent uses a 3°C band so speeds do not chatter around a setpoint. WMI speed is only rewritten when the mapped speed byte changes. The curve worker only runs when it has something to drive — an active curve or an automatic max-fan request — so a `performance` preset alone does not start temperature polling.
 
 **Max RPM:** the first time the driver loads with no stored measurement, it runs the fans at hardware max, reads the tach, and saves that CPU/GPU pair the same way animation settings are saved (`/var/lib/omen-rgb-keyboard/max_rpm`). On boards where that tach stays at 0 while max fan is held, the driver reads it again just after releasing max, and retries later in boot if the tach was not ready yet. `fan/max_rpm` shows those numbers. Every later load uses the stored value and does not measure again. Each curve's percent is a straight ramp up to that fan's max. **100** (or `max`) on a curve is that hardware max. The max-fan command spins both fans, so it is used only when every fan the driver is controlling asks for 100. A single fan at 100 gets the top manual speed for that fan. It releases when the curve drops below 100 (the 3°C band still applies). A manual `max_fan=1` is never cleared by this path.
 
