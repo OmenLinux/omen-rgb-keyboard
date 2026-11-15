@@ -578,6 +578,16 @@ echo "5" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_
 
 The driver intercepts the Omen key press and maps it to `KEY_MSDOS`, allowing you to bind custom shortcuts to it.
 
+Fn-F12 (the Windows key lock, the padlock next to the Windows logo) is reported separately as `KEY_PROG1` (`XF86Launch1`). The two keys arrive as different WMI events, but both used to end up as `KEY_MSDOS`, so a shortcut bound to the Omen key also fired on Fn-F12. The keymap now is:
+
+| Key | WMI event | Scancode | Reports |
+|-----|-----------|----------|---------|
+| Omen | `0x1d` | `0x21a5` | `KEY_MSDOS` |
+| Fn-F12 lock on | `0x4` | `0x21a4` | `KEY_PROG1` |
+| Fn-F12 lock off | `0x4` | `0x121a4` | `KEY_PROG1` |
+
+The firmware locks the Windows key itself; the driver only exposes the event. An empty payload is resolved through the firmware hotkey query, so the Omen key on models that send it with no payload (OMEN 15-dh0xxx) still reports `KEY_MSDOS`.
+
 ### Setting Up Shortcuts
 
 **GNOME:**
