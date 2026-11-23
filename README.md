@@ -263,8 +263,8 @@ By default the **EC owns the fans** (automatic). `fan_curve` shows the reference
 | `cpu_fan_rpm`, `gpu_fan_rpm` | Read-only RPM (where supported) |
 | `max_rpm` | CPU and GPU maximum RPM. The driver measures this the first time it loads, stores it with the animation state, and only reads it after that |
 | `max_fan` | `0` / `1` — max fans off/on (always available). Manual `1` is sticky until you write `0` |
-| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset). Also applies GPU CTGP/PPAB and re-actualizes PL1/PL2 defaults. Leaves a saved custom curve and the custom-speed switch alone. With no saved custom, the built-in curve for that preset is shown and applied |
-| `power_limits` | CPU PL1/PL2 in watts (`PL1 PL2`), or `default` / `0 0` to restore BIOS defaults. PL2 must be ≥ PL1. Read shows last written values (firmware has no get) |
+| `thermal_profile` | Write `silent`, `normal`, or `performance` (WMI preset). Also applies GPU CTGP/PPAB and, on supported boards (see below), re-actualizes PL1/PL2 defaults. Leaves a saved custom curve and the custom-speed switch alone. With no saved custom, the built-in curve for that preset is shown and applied |
+| `power_limits` | CPU PL1/PL2 in watts (`PL1 PL2`), or `default` / `0 0` to restore BIOS defaults (supported boards only; elsewhere this returns `EOPNOTSUPP`). PL2 must be ≥ PL1. Read shows last written values (firmware has no get) |
 | `fan_curve` | CPU curve. Read points as `temp:percent`. Write pairs to save a custom curve and turn the switch on. Write `default` or `ec` to return **both** fans to the EC (points kept, switch off). Until a GPU curve is set, this curve also drives the GPU fan |
 | `gpu_fan_curve` | GPU curve, same format. Saving one does not turn the switch on by itself. Write `cpu` or `default` to follow `fan_curve` again. Read shows `(cpu)` while it is following |
 | `fan_curve_enable` | `0` returns both fans to the EC and keeps the saved points. `1` drives the saved CPU curve, and the GPU curve too if one is saved. This switch is restored after reboot |
@@ -277,11 +277,13 @@ By default the **EC owns the fans** (automatic). `fan_curve` shows the reference
 
 While `thermal_profile` is `performance`, AC plug/unplug re-sends PL1/PL2 defaults so the EC picks the correct wattage for the new power source (same fix as mainline `hp-wmi`).
 
+The PL1/PL2 "default" request (`0 0`) is only sent on the boards where mainline `hp-wmi` sends it (the Victus-S path; list in `src/fan/omen_fan.c`). Other firmware can apply `0 0` literally and set the CPU package limits to 0 W, which throttles the CPU and iGPU (seen on OMEN Transcend 14, board 8C58). On those boards explicit `PL1 PL2` values still work.
+
 ```bash
 F=/sys/devices/platform/omen-rgb-keyboard/fan
 echo performance | tee "$F/thermal_profile"
 echo "65 65" | tee "$F/power_limits"   # custom PL1/PL2 (watts)
-echo default | tee "$F/power_limits"    # back to BIOS defaults for the active mode
+echo default | tee "$F/power_limits"    # back to BIOS defaults (supported boards only)
 ```
 
 #### Power Profiles Daemon (PPD)
