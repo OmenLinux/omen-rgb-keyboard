@@ -240,6 +240,32 @@ static int fan_victus_userdefine_trigger(void)
 	return fc[0];
 }
 
+/*
+ * Boards on which mainline hp-wmi sends the PL1/PL2 "default" (0/0) request:
+ * the hp_wmi_feature_boards entries that end up on the Victus-S path, i.e.
+ * not claimed first by omen_thermal_profile_boards or
+ * victus_thermal_profile_boards. Other firmware may apply 0/0 literally and
+ * set the package limits to 0 W (seen on OMEN Transcend 14, board 8C58).
+ */
+static const char * const pl_default_boards[] = {
+	"8A3D", "8A44", "8A4D",
+	"8B2F", "8BA9", "8BAA", "8BAB", "8BB3", "8BBE", "8BC2", "8BCA", "8BCD",
+	"8BD4", "8BD5",
+	"8C76", "8C77", "8C78", "8C99", "8C9C",
+	"8D26", "8D3F", "8D40", "8D41", "8D42", "8D87", "8D88", "8DD0", "8DD6",
+	"8DE1",
+	"8E35",
+	"8F1C",
+};
+
+static bool omen_pl_default_supported(void)
+{
+	const char *board = dmi_get_system_info(DMI_BOARD_NAME);
+
+	return board && match_string(pl_default_boards,
+				     ARRAY_SIZE(pl_default_boards), board) >= 0;
+}
+
 static int omen_set_cpu_pl1_pl2(u8 pl1, u8 pl2)
 {
 	struct omen_power_limits power_limits;
@@ -249,6 +275,9 @@ static int omen_set_cpu_pl1_pl2(u8 pl1, u8 pl2)
 		return -EINVAL;
 	if (pl2 < pl1)
 		return -EINVAL;
+	if (pl1 == HP_POWER_LIMIT_DEFAULT && pl2 == HP_POWER_LIMIT_DEFAULT &&
+	    !omen_pl_default_supported())
+		return -EOPNOTSUPP;
 
 	power_limits.pl1 = pl1;
 	power_limits.pl2 = pl2;
@@ -2185,7 +2214,8 @@ static int omen_powersource_event(struct notifier_block *nb,
 #else
 	in_performance = sysfs_streq(thermal_profile_name, "performance");
 #endif
-	if (!in_performance || !power_limits_supported) {
+	if (!in_performance || !power_limits_supported ||
+	    !omen_pl_default_supported()) {
 		mutex_unlock(&fan_lock);
 		return NOTIFY_DONE;
 	}
