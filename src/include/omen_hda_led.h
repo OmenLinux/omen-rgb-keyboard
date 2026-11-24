@@ -17,9 +17,9 @@
 /**
  * omen_hda_led_available - Check whether the driver-side HDA LED path is usable
  *
- * Returns true only when the code was built in, the mute_led module
- * parameter asked for it, and the kernel does not already drive the LED
- * through hda::mute (in-tree Realtek quirk).
+ * Returns true only when the code was built in, mute_led is enabled
+ * (the default), and the kernel does not already drive the LED through
+ * hda::mute (in-tree Realtek quirk).
  */
 bool omen_hda_led_available(void);
 

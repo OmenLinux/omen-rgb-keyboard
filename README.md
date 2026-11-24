@@ -219,14 +219,13 @@ HDMI. That is the kernel's behaviour, not a driver bug.
 **When the kernel does not cover your model.** Some newer OMEN boards are
 missing from the kernel's Realtek quirk table, so no `hda::mute` appears and the
 indicator stays dark. The driver carries its own HDA LED code for exactly these
-machines. It is built in by default and activates only when both conditions
-hold: the module was loaded with `mute_led=1`, and the kernel does not expose
-`hda::mute` yet.
+machines. It is built in by default and runs whenever the kernel does not
+expose `hda::mute`. `make reinstall` / a plain `modprobe` is enough; pass
+`mute_led=0` to force the path off.
 
-`install.sh` handles this automatically: if `/sys/class/leds/hda::mute` is
-missing, it adds `mute_led=1` to `/etc/modprobe.d/omen_rgb_keyboard.conf`, reloads
-the module and installs the monitor. If the kernel LED exists, it leaves
-everything alone. `OMEN_INSTALL_MUTE_MONITOR=0` / `=1` override the decision.
+`install.sh` still installs the userspace monitor when `/sys/class/leds/hda::mute`
+is missing. If the kernel LED exists, it leaves the monitor alone.
+`OMEN_INSTALL_MUTE_MONITOR=0` / `=1` override that decision.
 
 Manual setup:
 
@@ -234,12 +233,12 @@ Manual setup:
 # Drop the code from the module entirely (not needed on most machines)
 make -C src OMEN_HDA_LED=n
 
-# Load with the driver-side path enabled
-sudo modprobe omen_rgb_keyboard mute_led=1
+# Force the driver-side path off (kernel already drives the LED, or unused)
+sudo modprobe omen_rgb_keyboard mute_led=0
 ```
 
 `mute_led` can also go into `/etc/modprobe.d/omen_rgb_keyboard.conf` or the
-kernel command line (`omen_rgb_keyboard.mute_led=1`). It is ignored whenever
+kernel command line (`omen_rgb_keyboard.mute_led=0`). It is ignored whenever
 the kernel already exposes `hda::mute`, because two writers would race on the
 same codec coefficient.
 

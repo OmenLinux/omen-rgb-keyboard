@@ -80,13 +80,10 @@ static int __init hp_wmi_bios_setup(struct platform_device *device)
 		pr_warn("Failed to setup input device: %d\n", ret);
 	}
 
-	/* HDA LED control for machines the kernel does not cover (mute_led=1) */
-	if (omen_hda_led_available()) {
-		ret = omen_hda_led_init();
-		if (ret)
-			pr_warn("Failed to initialize HDA LED control: %d\n", ret);
-		/* Non-fatal, continue anyway */
-	}
+	/* HDA LED control for machines the kernel does not cover */
+	ret = omen_hda_led_init();
+	if (ret)
+		pr_warn("Failed to initialize HDA LED control: %d\n", ret);
 	
 	/*
 	 * Push the restored state to the hardware. An animation does this on

@@ -31,10 +31,10 @@
  * This path exists for the models the kernel does not know yet, and it steps
  * aside whenever hda::mute is already there.
  */
-static bool mute_led_enable;
+static bool mute_led_enable = true;
 module_param_named(mute_led, mute_led_enable, bool, 0444);
 MODULE_PARM_DESC(mute_led,
-		 "Drive the mute button LED through HDA coef verbs (default 0); ignored when the kernel already provides hda::mute");
+		 "Drive the mute button LED through HDA coef verbs (default 1); ignored when the kernel already provides hda::mute");
 
 /* HDA codec parameters */
 #define OMEN_HDA_CODEC_NID     0x20    /* Node ID */
@@ -364,7 +364,7 @@ static void codec_retry_work_handler(struct work_struct *work)
 int omen_hda_led_init(void)
 {
 	if (!mute_led_enable) {
-		pr_debug("HDA mute LED control disabled (mute_led=0)\n");
+		pr_info("HDA mute LED control disabled (mute_led=0)\n");
 		return 0;
 	}
 

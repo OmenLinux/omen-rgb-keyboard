@@ -40,9 +40,10 @@ ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
   RUN+="/bin/chmod g+w /sys$devpath/fan/gpu_fan_temp_zone", \
   RUN+="/bin/chmod g+w /sys$devpath/fan/power_limits"
 
-# Mute LED attrs only exist when the driver was built with
-# OMEN_HDA_LED=y and loaded with mute_led=1, so they are handled separately
-# and guarded by TEST= to keep udev from logging failed chgrp calls.
+# Mute LED attrs only exist when the driver was built with OMEN_HDA_LED=y
+# and the kernel does not already expose hda::mute (mute_led=0 hides them),
+# so they are handled separately and guarded by TEST= to keep udev from
+# logging failed chgrp calls.
 ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
   TEST=="/sys$devpath/rgb_zones/mute_led", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/mute_led", \
