@@ -16,6 +16,7 @@ ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone03", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/all", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/lighting", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_mode", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
@@ -49,6 +50,7 @@ ACTION=="add", SUBSYSTEM=="platform", KERNEL=="omen-rgb-keyboard", ENV{DRIVER}==
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/zone03", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/all", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/brightness", \
+  RUN+="/bin/chgrp input /sys$devpath/rgb_zones/lighting", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_mode", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/animation_speed", \
   RUN+="/bin/chgrp input /sys$devpath/rgb_zones/gradient_config", \
