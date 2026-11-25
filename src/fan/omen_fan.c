@@ -34,6 +34,7 @@
 #include <linux/device.h>
 #include <linux/dmi.h>
 #include <linux/fs.h>
+#include <linux/hwmon.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/mutex.h>
@@ -566,10 +567,14 @@ static bool fan_in_performance(void)
 	return sysfs_streq(thermal_profile_name, "performance");
 }
 
+static bool fan_curve_hw_supported(void)
+{
+	return fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid;
+}
+
 static bool fan_curve_can_override(void)
 {
-	return fan_iface == OMEN_FAN_IF_VICTUS_S && fan_tbl_valid &&
-	       cpu_curve.npoints >= 2;
+	return fan_curve_hw_supported() && cpu_curve.npoints >= 2;
 }
 
 /* No saved GPU curve: the GPU fan uses the CPU curve's speed byte. */
@@ -583,8 +588,6 @@ static bool fan_worker_needed_locked(void)
 	if (max_fan_manual)
 		return false;
 	if (curve_enabled && fan_curve_can_override())
-		return true;
-	if (fan_in_performance())
 		return true;
 	if (max_fan_auto)
 		return true;
@@ -1606,6 +1609,46 @@ static ssize_t gpu_fan_rpm_show(struct device *dev,
 	return sysfs_emit(buf, "%d\n", rpm);
 }
 
+static umode_t omen_fan_hwmon_is_visible(const void *drvdata,
+					 enum hwmon_sensor_types type,
+					 u32 attr, int channel)
+{
+	if (type == hwmon_fan && attr == hwmon_fan_input && channel < 2)
+		return 0444;
+	return 0;
+}
+
+static int omen_fan_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
+			       u32 attr, int channel, long *val)
+{
+	int rpm;
+
+	if (type != hwmon_fan || attr != hwmon_fan_input)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&fan_lock);
+	rpm = fan_rpm_read(channel == 0 ? FAN_CPU : FAN_GPU);
+	mutex_unlock(&fan_lock);
+
+	*val = rpm < 0 ? 0 : rpm;
+	return 0;
+}
+
+static const struct hwmon_ops omen_fan_hwmon_ops = {
+	.is_visible = omen_fan_hwmon_is_visible,
+	.read = omen_fan_hwmon_read,
+};
+
+static const struct hwmon_channel_info *omen_fan_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT, HWMON_F_INPUT),
+	NULL,
+};
+
+static const struct hwmon_chip_info omen_fan_chip_info = {
+	.ops = &omen_fan_hwmon_ops,
+	.info = omen_fan_hwmon_info,
+};
+
 static ssize_t max_fan_show(struct device *dev,
 			    struct device_attribute *attr, char *buf)
 {
@@ -1885,6 +1928,9 @@ static ssize_t fan_curve_store(struct device *dev,
 	return -ENODEV;
 #endif
 
+	if (!fan_curve_hw_supported())
+		return -EOPNOTSUPP;
+
 	if (fan_curve_parse_points(buf, count, fan_curve_learned_for(false),
 				   temps, pcts, &npt))
 		return -EINVAL;
@@ -1893,7 +1939,7 @@ static ssize_t fan_curve_store(struct device *dev,
 	fan_curve_commit(&cpu_curve, temps, pcts, npt);
 	curve_enabled = true;
 
-	if (max_fan_manual || !fan_curve_can_override()) {
+	if (max_fan_manual) {
 		mutex_unlock(&fan_lock);
 		fan_persist_save();
 		return count;
@@ -1941,11 +1987,11 @@ static ssize_t fan_curve_enable_store(struct device *dev,
 #endif
 
 	mutex_lock(&fan_lock);
-	if (!cpu_curve.user_saved || cpu_curve.npoints < 2) {
+	if (!fan_curve_hw_supported()) {
 		mutex_unlock(&fan_lock);
-		return -EINVAL;
+		return -EOPNOTSUPP;
 	}
-	if (!fan_curve_can_override()) {
+	if (!cpu_curve.user_saved || cpu_curve.npoints < 2) {
 		mutex_unlock(&fan_lock);
 		return -EINVAL;
 	}
@@ -2060,13 +2106,16 @@ static ssize_t gpu_fan_curve_store(struct device *dev,
 	return -ENODEV;
 #endif
 
+	if (!fan_curve_hw_supported())
+		return -EOPNOTSUPP;
+
 	if (fan_curve_parse_points(buf, count, fan_curve_learned_for(true),
 				   temps, pcts, &npt))
 		return -EINVAL;
 
 	mutex_lock(&fan_lock);
 	fan_curve_commit(&gpu_curve, temps, pcts, npt);
-	if (max_fan_manual || fan_iface != OMEN_FAN_IF_VICTUS_S || !fan_tbl_valid) {
+	if (max_fan_manual) {
 		mutex_unlock(&fan_lock);
 		fan_persist_save();
 		return count;
@@ -2534,6 +2583,7 @@ static void fan_max_rpm_probe_work_fn(struct work_struct *work)
 
 int omen_fan_setup(struct platform_device *pdev)
 {
+	struct device *hwmon_dev;
 	int ret;
 	struct omen_fan_persist loaded = {};
 	bool have_persist = false;
@@ -2563,6 +2613,15 @@ int omen_fan_setup(struct platform_device *pdev)
 		pr_warn("failed to create fan sysfs group: %d\n", ret);
 		fan_pdev = NULL;
 		return ret;
+	}
+
+	hwmon_dev = devm_hwmon_device_register_with_info(&pdev->dev, "omen_fan",
+							 NULL, &omen_fan_chip_info,
+							 NULL);
+	if (IS_ERR(hwmon_dev)) {
+		pr_warn("failed to register fan hwmon device: %ld\n",
+			PTR_ERR(hwmon_dev));
+		hwmon_dev = NULL;
 	}
 
 	power_source_nb.notifier_call = omen_powersource_event;
