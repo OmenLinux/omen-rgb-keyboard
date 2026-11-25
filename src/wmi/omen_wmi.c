@@ -158,7 +158,7 @@ static int hp_wmi_hotkey_query(void)
 	int ret;
 
 	ret = hp_wmi_perform_query(HPWMI_HOTKEY_QUERY, HPWMI_READ,
-				   &val, 0, sizeof(val));
+				   &val, sizeof(val), sizeof(val));
 	if (ret)
 		return ret;
 	return val ? val : -ENODATA;
@@ -189,7 +189,8 @@ static void hp_wmi_notify(union acpi_object *obj, void *context)
 	 * against. 0x4 carries the Omen key on the OMEN 15-dh0xxx and the
 	 * Windows key lock (Fn-F12) on the 15-en0xxx, both with an empty
 	 * payload, so an empty payload has to be resolved by asking the
-	 * firmware which hotkey was actually pressed.
+	 * firmware which hotkey was actually pressed. If that query is
+	 * unsupported, event 0x4 still maps to the Windows key lock.
 	 */
 	case 0x4:
 	case 0x1d:
@@ -203,6 +204,8 @@ static void hp_wmi_notify(union acpi_object *obj, void *context)
 				 event_id, key_code);
 			if (key_code > 0)
 				scancode = key_code;
+			else if (event_id == 0x4)
+				scancode = WIN_LOCK_ON_SCANCODE;
 		}
 
 		if (!scancode) {
