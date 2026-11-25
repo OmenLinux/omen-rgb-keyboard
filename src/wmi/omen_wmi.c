@@ -24,14 +24,17 @@
 static struct input_dev *hp_wmi_input_dev;
 
 /*
- * Some models (e.g. OMEN 15-dh0xxx) raise the Omen key with an empty payload,
- * so the scancode arrives as 0 and the event id alone identifies the key.
+ * Fn-F12 (the Windows key lock) arrives as its own WMI event with an empty
+ * payload - the same shape the Omen key has on the OMEN 15-dh0xxx - so it is
+ * reported as a separate key and never as another Omen key press.
  */
-#define OMEN_KEY_SCANCODE_EMPTY 0x0000
+#define WIN_LOCK_ON_SCANCODE  0x21a4
+#define WIN_LOCK_OFF_SCANCODE 0x121a4
 
 static const struct key_entry hp_wmi_keymap[] = {
 	{ KE_KEY, OMEN_KEY_SCANCODE, { KEY_MSDOS } },
-	{ KE_KEY, OMEN_KEY_SCANCODE_EMPTY, { KEY_MSDOS } },
+	{ KE_KEY, WIN_LOCK_ON_SCANCODE, { KEY_PROG1 } },
+	{ KE_KEY, WIN_LOCK_OFF_SCANCODE, { KEY_PROG1 } },
 	{ KE_END, 0 }
 };
 
@@ -144,10 +147,29 @@ out_free:
 	return ret;
 }
 
+/*
+ * Ask the firmware which hotkey raised the current event. Behaves like
+ * hp_wmi_read_int() in mainline hp-wmi: a failed query and a zero answer are
+ * both reported as errors, since neither names a key.
+ */
+static int hp_wmi_hotkey_query(void)
+{
+	int val = 0;
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_HOTKEY_QUERY, HPWMI_READ,
+				   &val, sizeof(val), sizeof(val));
+	if (ret)
+		return ret;
+	return val ? val : -ENODATA;
+}
+
 static void hp_wmi_notify(union acpi_object *obj, void *context)
 {
 	u32 event_id = 0;
 	u32 event_data = 0;
+	u32 scancode;
+	int key_code;
 
 	if (!obj)
 		return;
@@ -163,20 +185,38 @@ static void hp_wmi_notify(union acpi_object *obj, void *context)
 
 	switch (event_id) {
 	/*
-	 * 0x1d on the models this driver was written against; the
-	 * OMEN 15-dh0xxx raises 0x4 for the same key.
+	 * 0x1d is the Omen key on the models this driver was written
+	 * against. 0x4 carries the Omen key on the OMEN 15-dh0xxx and the
+	 * Windows key lock (Fn-F12) on the 15-en0xxx, both with an empty
+	 * payload, so an empty payload has to be resolved by asking the
+	 * firmware which hotkey was actually pressed. If that query is
+	 * unsupported, event 0x4 still maps to the Windows key lock.
 	 */
 	case 0x4:
 	case 0x1d:
-		/* Omen key press event */
-		if (hp_wmi_input_dev) {
-			pr_debug("Omen key: event 0x%x scancode 0x%x\n",
-				 event_id, event_data);
-			if (!sparse_keymap_report_event(hp_wmi_input_dev,
-							event_data, 1, true))
-				pr_debug("Omen key: scancode 0x%x not in keymap\n",
-					 event_data);
+		if (!hp_wmi_input_dev)
+			break;
+
+		scancode = event_data;
+		if (!scancode) {
+			key_code = hp_wmi_hotkey_query();
+			pr_debug("event 0x%x: empty payload, hotkey query %d\n",
+				 event_id, key_code);
+			if (key_code > 0)
+				scancode = key_code;
+			else if (event_id == 0x4)
+				scancode = WIN_LOCK_ON_SCANCODE;
 		}
+
+		if (!scancode) {
+			pr_warn_once("event 0x%x: no scancode in payload or hotkey query\n",
+				     event_id);
+			break;
+		}
+
+		pr_debug("key: event 0x%x scancode 0x%x\n", event_id, scancode);
+		if (!sparse_keymap_report_event(hp_wmi_input_dev, scancode, 1, true))
+			pr_debug("key: scancode 0x%x not in keymap\n", scancode);
 		break;
 	default:
 		pr_debug("Unhandled WMI event: 0x%x data 0x%x\n", event_id, event_data);
